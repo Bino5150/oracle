@@ -1,0 +1,10 @@
+/build/
+/build-*/
+/.cache/
+/.vscode/
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+compile_commands.json
