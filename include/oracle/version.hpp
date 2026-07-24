@@ -4,6 +4,6 @@
 
 namespace oracle {
 
-inline constexpr std::string_view version = "0.2.0-phase1a";
+inline constexpr std::string_view version = "0.3.0-phase1b";
 
 }  // namespace oracle

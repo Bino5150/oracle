@@ -26,21 +26,30 @@
 - [x] Correctness tests
 - [x] Oracle endpoint configuration on port 5150
 
-## Phase 1B — Memory planning and transformer primitives
+## Phase 1B — Predictable memory and GGUF foundations
 
-- [ ] Monotonic arena allocator
-- [ ] Reusable scratch-buffer planner
-- [ ] Allocation and peak-memory telemetry
+- [x] Monotonic aligned arena allocator
+- [x] Marks, rewinds, and scoped scratch lifetimes
+- [x] Allocation and peak-memory telemetry
+- [x] Reusable scratch-buffer planner
+- [x] GGUF v2/v3 header and metadata parser
+- [x] GGUF tensor descriptor parsing
+- [x] GGUF inspection CLI with JSON output
+- [x] Synthetic GGUF fixture tests
+
+## Phase 1C — Transformer reference primitives
+
 - [ ] RoPE reference kernel
 - [ ] Causal masked attention reference kernel
 - [ ] Embedding lookup
 - [ ] Minimal sampler
-- [ ] Tiny purpose-built model format
+- [ ] KV-cache reference representation
+- [ ] Tiny end-to-end transformer fixture
 
-## Phase 2 — GGUF compatibility
+## Phase 2 — Real GGUF model loading
 
-- [ ] GGUF metadata parser
-- [ ] Memory-mapped weights
+- [ ] Memory-mapped tensor payloads
+- [ ] Tensor byte-size validation across supported GGML types
 - [ ] F16, BF16, and Q8 reference decoding
 - [ ] Architecture mapping for one model family
 - [ ] Quantization adapters separated from core tensor representation

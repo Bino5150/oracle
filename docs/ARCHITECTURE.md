@@ -13,7 +13,9 @@ Lumina / CLI / OpenAI-compatible API (planned)
                  |         |
         CPU reference   CUDA backend (planned)
                      |
-             Core tensor/storage
+       Core tensor / arena / scratch planning
+                     |
+            GGUF structure reader
 ```
 
 ## Core modules
@@ -24,6 +26,8 @@ Owns shared primitives: configuration, tensors, data types, shapes, strides, sto
 
 The Phase 1A `Tensor` uses shared aligned storage. Copying or creating a view shares the underlying allocation; it does not copy payload data. Contiguous access is exposed through `std::span<float>`, while strided access uses checked multidimensional indexing.
 
+Phase 1B adds `MemoryArena` for bounded monotonic allocation and `ScratchPlanner` for assigning reusable offsets to temporary buffers based on their liveness intervals. Planning remains separate from storage placement so the same plan can be consumed by CPU, CUDA, or hybrid execution.
+
 ### `backend`
 
 Defines execution capabilities. Backends own kernels, synchronization, and hardware feature detection. The CPU backend is the numerical correctness reference. CUDA support remains optional at compile time.
@@ -33,6 +37,8 @@ Phase 1A deliberately favors obvious scalar implementations over clever optimiza
 ### `model`
 
 Owns model metadata and, later, graph construction and weight mapping. File-format parsing stays isolated from execution so GGUF compatibility does not become Oracle's internal architecture.
+
+`GgufReader` currently parses GGUF v2/v3 structure and tensor descriptors without allocating tensor payloads. Memory mapping, quantized decoding, and architecture mapping will be layered above this representation rather than embedded in the binary reader.
 
 ### `runtime`
 
@@ -63,12 +69,15 @@ Oracle will eventually expose two distinct surfaces:
 1. **OpenAI-compatible inference API** for Lumina and other clients.
 2. **Native Oracle management API** for model lifecycle, memory planning, telemetry, scheduler state, and advanced controls.
 
-The configured default endpoint is `127.0.0.1:5150`. Phase 1A records and reports that endpoint but does not yet bind a network socket.
+The configured default endpoint is `127.0.0.1:5150`. The current engine records and reports that endpoint but does not yet bind a network socket.
 
 ## Near-term interfaces
 
 - `IBackend`: hardware execution and tensor operations
 - `Tensor`: shape, stride, dtype, and shared storage metadata
+- `MemoryArena`: bounded aligned execution storage with telemetry
+- `ScratchPlanner`: backend-neutral temporary-buffer layout
+- `GgufReader`: validated file structure and tensor descriptors
 - `Model`: immutable model metadata and weight ownership
 - `Engine`: lifecycle, configuration, and status reporting
 - `Scheduler`: request admission and ordering
@@ -76,7 +85,7 @@ The configured default endpoint is `127.0.0.1:5150`. Phase 1A records and report
 
 ## Current non-goals
 
-- Parsing GGUF
+- Loading or decoding GGUF tensor payloads
 - Tokenization and sampling
 - Real transformer attention
 - HTTP serving
