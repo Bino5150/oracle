@@ -37,23 +37,35 @@
 - [x] GGUF inspection CLI with JSON output
 - [x] Synthetic GGUF fixture tests
 
-## Phase 1C — Transformer reference primitives
+## Phase 1C — Memory-mapped GGUF tensor access
 
+- [x] Read-only mapped-file abstraction
+- [x] GGML block-size and storage-size registry
+- [x] Checked tensor payload byte-size calculation
+- [x] Zero-copy tensor views into mapped model data
+- [x] Name-based tensor registry
+- [x] Tensor bounds, alignment, and overlap validation
+- [x] Mapping and payload telemetry
+- [x] Verified GGUF inspection and named tensor lookup
+- [x] Synthetic corruption and lifecycle tests
+
+## Phase 1D — Transformer reference primitives
+
+- [ ] Embedding lookup
 - [ ] RoPE reference kernel
 - [ ] Causal masked attention reference kernel
-- [ ] Embedding lookup
-- [ ] Minimal sampler
 - [ ] KV-cache reference representation
+- [ ] Minimal sampler
 - [ ] Tiny end-to-end transformer fixture
 
-## Phase 2 — Real GGUF model loading
+## Phase 2 — First real model family
 
-- [ ] Memory-mapped tensor payloads
-- [ ] Tensor byte-size validation across supported GGML types
-- [ ] F16, BF16, and Q8 reference decoding
+- [ ] F16 and BF16 reference decoding
+- [ ] Q8_0 reference decoding
 - [ ] Architecture mapping for one model family
 - [ ] Quantization adapters separated from core tensor representation
 - [ ] Tokenizer integration
+- [ ] Real prompt ingestion and token generation
 
 ## Phase 3 — CUDA backend
 

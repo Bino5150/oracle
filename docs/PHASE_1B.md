@@ -45,4 +45,4 @@ Phase 1B does not yet provide:
 - tokenizer loading
 - inference from GGUF weights
 
-Those are staged for Phase 2 so the file parser remains independently testable.
+Those layers begin in Phase 1C so the file parser remains independently testable.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(oracle_inference_engine VERSION 0.3.0 LANGUAGES CXX)
+project(oracle_inference_engine VERSION 0.4.0 LANGUAGES CXX)
 
 option(ORACLE_ENABLE_CUDA "Build the CUDA backend" OFF)
 option(ORACLE_BUILD_TESTS "Build tests" ON)
@@ -12,11 +12,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(oracle_engine
     src/core/config.cpp
+    src/core/mapped_file.cpp
     src/core/memory_arena.cpp
     src/core/scratch_planner.cpp
     src/core/tensor.cpp
     src/backend/cpu/cpu_backend.cpp
+    src/model/ggml_type.cpp
     src/model/gguf.cpp
+    src/model/mapped_gguf.cpp
     src/model/model.cpp
     src/runtime/engine.cpp
     src/runtime/reference_pipeline.cpp
@@ -67,4 +70,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase1b-tests tests/test_phase1b.cpp)
     target_link_libraries(oracle-phase1b-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase1b-tests COMMAND oracle-phase1b-tests)
+
+    add_executable(oracle-phase1c-tests tests/test_phase1c.cpp)
+    target_link_libraries(oracle-phase1c-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase1c-tests COMMAND oracle-phase1c-tests)
 endif()

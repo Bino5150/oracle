@@ -15,6 +15,8 @@ Lumina / CLI / OpenAI-compatible API (planned)
                      |
        Core tensor / arena / scratch planning
                      |
+      Mapped GGUF model / GGML storage layouts
+                     |
             GGUF structure reader
 ```
 
@@ -22,11 +24,13 @@ Lumina / CLI / OpenAI-compatible API (planned)
 
 ### `core`
 
-Owns shared primitives: configuration, tensors, data types, shapes, strides, storage, errors, and diagnostics. It must not depend on model-specific or backend-specific code.
+Owns shared primitives: configuration, tensors, data types, shapes, strides, storage, errors, file mappings, and diagnostics. It must not depend on model-specific or backend-specific code.
 
 The Phase 1A `Tensor` uses shared aligned storage. Copying or creating a view shares the underlying allocation; it does not copy payload data. Contiguous access is exposed through `std::span<float>`, while strided access uses checked multidimensional indexing.
 
 Phase 1B adds `MemoryArena` for bounded monotonic allocation and `ScratchPlanner` for assigning reusable offsets to temporary buffers based on their liveness intervals. Planning remains separate from storage placement so the same plan can be consumed by CPU, CUDA, or hybrid execution.
+
+Phase 1C adds `MappedFile`, a read-only RAII mapping used for immutable model weights. The mapping interface exposes bytes without introducing GGUF concepts into the core layer.
 
 ### `backend`
 
@@ -36,9 +40,11 @@ Phase 1A deliberately favors obvious scalar implementations over clever optimiza
 
 ### `model`
 
-Owns model metadata and, later, graph construction and weight mapping. File-format parsing stays isolated from execution so GGUF compatibility does not become Oracle's internal architecture.
+Owns model metadata, mapped weight views, and later graph construction. File-format parsing stays isolated from execution so GGUF compatibility does not become Oracle's internal architecture.
 
-`GgufReader` currently parses GGUF v2/v3 structure and tensor descriptors without allocating tensor payloads. Memory mapping, quantized decoding, and architecture mapping will be layered above this representation rather than embedded in the binary reader.
+`GgufReader` parses GGUF v2/v3 structure and tensor descriptors. `GgmlTypeLayout` describes how each supported storage type packs rows. `MappedGgufModel` validates payload ranges and exposes immutable `GgufTensorView` objects that point directly into the mapped file.
+
+Quantized decoding and architecture mapping will be layered above these views rather than embedded in the binary reader or mapping code.
 
 ### `runtime`
 
@@ -77,15 +83,19 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 - `Tensor`: shape, stride, dtype, and shared storage metadata
 - `MemoryArena`: bounded aligned execution storage with telemetry
 - `ScratchPlanner`: backend-neutral temporary-buffer layout
+- `MappedFile`: immutable mapped file bytes with RAII ownership
 - `GgufReader`: validated file structure and tensor descriptors
-- `Model`: immutable model metadata and weight ownership
+- `GgmlTypeLayout`: block and byte layout for GGML storage types
+- `MappedGgufModel`: validated model mapping and tensor registry
+- `GgufTensorView`: immutable zero-copy weight bytes
+- `Model`: future architecture metadata and weight ownership policy
 - `Engine`: lifecycle, configuration, and status reporting
 - `Scheduler`: request admission and ordering
 - `ReferencePipeline`: composed correctness smoke path
 
 ## Current non-goals
 
-- Loading or decoding GGUF tensor payloads
+- Decoding F16, BF16, or quantized weight values
 - Tokenization and sampling
 - Real transformer attention
 - HTTP serving

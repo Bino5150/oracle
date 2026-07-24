@@ -1,29 +1,29 @@
 # Oracle Inference Engine
 
-Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1B adds predictable temporary-memory planning and the first GGUF model-file foundation while retaining the correctness-first CPU path from Phase 1A.
+Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1C adds safe, zero-copy access to GGUF tensor payloads while retaining the correctness-first CPU path and predictable-memory foundation from Phases 1A and 1B.
 
-## Current status — Phase 1B
+## Current status — Phase 1C
 
 Oracle is not yet a language-model runner or HTTP server. It now provides:
 
 - C++20 core library and CLI
 - 64-byte aligned F32 tensor storage
-- Shape, stride, dtype, ownership, and bounds metadata
-- Zero-copy contiguous, reshaped, and strided tensor views
+- shape, stride, dtype, ownership, and bounds metadata
+- zero-copy contiguous, reshaped, and strided tensor views
 - CPU reference kernels for elementwise operations, matmul, RMSNorm, SiLU, and softmax
-- A synthetic transformer-like reference pipeline
-- A monotonic aligned memory arena with marks, rewinds, scoped scratch lifetimes, and telemetry
-- A deterministic scratch-buffer planner with liveness-based range reuse
-- A dependency-free GGUF v2/v3 reader for:
-  - file headers
-  - scalar and nested-array metadata
-  - alignment metadata
-  - tensor names, dimensions, GGML type identifiers, and offsets
-- `oracle-gguf-inspect` for text or JSON model inspection without loading weights
-- Structured text and JSON engine status
-- Default future server endpoint: `http://127.0.0.1:5150`
-- Correctness tests and a dependency-free benchmark harness
-- Optional CUDA build hook, still intentionally stubbed
+- a synthetic transformer-like reference pipeline
+- a monotonic aligned memory arena with marks, rewinds, scoped scratch lifetimes, and telemetry
+- a deterministic scratch-buffer planner with liveness-based range reuse
+- a dependency-free GGUF v2/v3 reader for metadata and tensor descriptors
+- read-only mapped-file ownership with RAII cleanup and move semantics
+- a GGML storage-layout registry with checked row and tensor byte-size calculation
+- `MappedGgufModel` validation for tensor bounds, block shapes, offsets, and overlaps
+- zero-copy named tensor views into mapped GGUF payloads
+- `oracle-gguf-inspect` metadata, verification, tensor lookup, and JSON modes
+- structured text and JSON engine status
+- default future server endpoint: `http://127.0.0.1:5150`
+- correctness tests and a dependency-free benchmark harness
+- optional CUDA build hook, still intentionally stubbed
 
 ## Build and test
 
@@ -50,14 +50,22 @@ Run the vertical-slice demo and benchmark:
 ./build/oracle-bench --rows 64 --inner 256 --columns 256 --iterations 10
 ```
 
-Inspect a GGUF file without allocating its tensor payloads:
+Inspect GGUF metadata without mapping tensor payloads:
 
 ```bash
 ./build/oracle-gguf-inspect /path/to/model.gguf
 ./build/oracle-gguf-inspect /path/to/model.gguf --json
 ```
 
-The Phase 1B parser reads model structure only. Memory mapping, weight decoding, architecture mapping, tokenization, and generation are intentionally deferred.
+Map and validate the real tensor payloads:
+
+```bash
+./build/oracle-gguf-inspect /path/to/model.gguf --verify
+./build/oracle-gguf-inspect /path/to/model.gguf --verify --json
+./build/oracle-gguf-inspect /path/to/model.gguf --tensor token_embd.weight
+```
+
+Phase 1C validates and exposes weight bytes but does not decode quantized values or execute a real model yet.
 
 ## CUDA
 
@@ -68,7 +76,7 @@ cmake -S . -B build-cuda -DORACLE_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 ```
 
-The current CUDA translation unit is only a build hook. Phase 1B does not claim GPU execution yet.
+The current CUDA translation unit is only a build hook. Phase 1C does not claim GPU execution yet.
 
 ## Design principles
 
@@ -79,4 +87,4 @@ The current CUDA translation unit is only a build hook. Phase 1B does not claim 
 5. **Incremental correctness:** begin with a simple CPU reference implementation, then accelerate.
 6. **Compatibility plus native control:** the future OpenAI-compatible API stays separate from Oracle's richer management and telemetry API.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
