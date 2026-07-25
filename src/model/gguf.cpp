@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 #include <cstddef>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -169,6 +170,19 @@ private:
     return (value + mask) & ~mask;
 }
 
+[[nodiscard]] std::size_t utf8_safe_prefix_length(std::string_view value,
+                                                    std::size_t maximum) noexcept {
+    if (value.size() <= maximum) {
+        return value.size();
+    }
+    std::size_t length = maximum;
+    while (length > 0 &&
+           (static_cast<unsigned char>(value[length]) & 0xc0U) == 0x80U) {
+        --length;
+    }
+    return length;
+}
+
 [[nodiscard]] std::string json_escape(std::string_view value) {
     std::ostringstream output;
     for (const char raw_character : value) {
@@ -228,9 +242,17 @@ private:
         case GgufMetadataType::int32:
             output << *value.get_if<std::int32_t>();
             break;
-        case GgufMetadataType::float32:
-            output << std::setprecision(9) << *value.get_if<float>();
+        case GgufMetadataType::float32: {
+            const float number = *value.get_if<float>();
+            if (std::isfinite(number)) {
+                output << std::setprecision(9) << number;
+            } else if (std::isnan(number)) {
+                output << "\"NaN\"";
+            } else {
+                output << (number > 0.0F ? "\"Infinity\"" : "\"-Infinity\"");
+            }
             break;
+        }
         case GgufMetadataType::boolean:
             output << (*value.get_if<bool>() ? "true" : "false");
             break;
@@ -255,11 +277,86 @@ private:
         case GgufMetadataType::int64:
             output << *value.get_if<std::int64_t>();
             break;
-        case GgufMetadataType::float64:
-            output << std::setprecision(17) << *value.get_if<double>();
+        case GgufMetadataType::float64: {
+            const double number = *value.get_if<double>();
+            if (std::isfinite(number)) {
+                output << std::setprecision(17) << number;
+            } else if (std::isnan(number)) {
+                output << "\"NaN\"";
+            } else {
+                output << (number > 0.0 ? "\"Infinity\"" : "\"-Infinity\"");
+            }
             break;
+        }
     }
     return output.str();
+}
+
+[[nodiscard]] std::string value_preview_impl(const GgufValue& value,
+                                             std::size_t max_array_items,
+                                             std::size_t max_string_bytes) {
+    if (value.type() == GgufMetadataType::string) {
+        const std::string& text = *value.get_if<std::string>();
+        if (text.size() <= max_string_bytes) {
+            return value_json(value);
+        }
+        const std::size_t preview_bytes =
+            utf8_safe_prefix_length(text, max_string_bytes);
+        return "\"" + json_escape(std::string_view(text).substr(0, preview_bytes)) +
+               "...\" (" + std::to_string(text.size()) + " bytes)";
+    }
+
+    if (value.type() != GgufMetadataType::array) {
+        return value_json(value);
+    }
+
+    const auto& array = **value.get_if<std::shared_ptr<GgufArray>>();
+    std::ostringstream output;
+    output << "array<" << gguf_metadata_type_name(array.element_type) << ">["
+           << array.values.size() << ']';
+    if (array.values.empty() || max_array_items == 0) {
+        return output.str();
+    }
+
+    output << " {";
+    const std::size_t preview_count = std::min(array.values.size(), max_array_items);
+    for (std::size_t index = 0; index < preview_count; ++index) {
+        if (index != 0) {
+            output << ", ";
+        }
+        output << value_preview_impl(array.values[index], max_array_items, max_string_bytes);
+    }
+    if (preview_count < array.values.size()) {
+        output << ", ...";
+    }
+    output << '}';
+    return output.str();
+}
+
+void append_metadata_entry_json(std::ostringstream& output,
+                                const GgufMetadataEntry& entry,
+                                GgufMetadataJsonMode mode) {
+    output << "{\"key\":\"" << json_escape(entry.key) << "\",\"type\":\""
+           << gguf_metadata_type_name(entry.value.type()) << '"';
+
+    if (entry.value.type() == GgufMetadataType::array) {
+        const auto& array = **entry.value.get_if<std::shared_ptr<GgufArray>>();
+        output << ",\"element_type\":\"" << gguf_metadata_type_name(array.element_type)
+               << "\",\"length\":" << array.values.size();
+        if (mode == GgufMetadataJsonMode::full) {
+            output << ",\"value\":" << value_json(entry.value);
+        }
+    } else if (mode == GgufMetadataJsonMode::compact &&
+               entry.value.type() == GgufMetadataType::string &&
+               entry.value.get_if<std::string>()->size() > 512) {
+        const std::string& text = *entry.value.get_if<std::string>();
+        const std::size_t preview_bytes = utf8_safe_prefix_length(text, 512);
+        output << ",\"length\":" << text.size() << ",\"preview\":\""
+               << json_escape(std::string_view(text).substr(0, preview_bytes)) << "...\"";
+    } else {
+        output << ",\"value\":" << value_json(entry.value);
+    }
+    output << '}';
 }
 
 }  // namespace
@@ -401,7 +498,66 @@ GgufFile GgufReader::read(const std::filesystem::path& path) {
     return file;
 }
 
+bool gguf_metadata_matches(std::string_view key, GgufMetadataQuery query) noexcept {
+    if (!query.exact_key.empty()) {
+        return key == query.exact_key;
+    }
+    if (!query.prefix.empty()) {
+        return key.starts_with(query.prefix);
+    }
+    return true;
+}
+
+std::size_t gguf_metadata_match_count(const GgufFile& file,
+                                      GgufMetadataQuery query) noexcept {
+    return static_cast<std::size_t>(std::ranges::count_if(
+        file.metadata,
+        [query](const GgufMetadataEntry& entry) {
+            return gguf_metadata_matches(entry.key, query);
+        }));
+}
+
 std::string gguf_value_to_string(const GgufValue& value) { return value_json(value); }
+
+std::string gguf_value_preview(const GgufValue& value,
+                               std::size_t max_array_items,
+                               std::size_t max_string_bytes) {
+    return value_preview_impl(value, max_array_items, max_string_bytes);
+}
+
+std::string gguf_metadata_entries_json(const GgufFile& file,
+                                       GgufMetadataJsonMode mode,
+                                       GgufMetadataQuery query) {
+    if (!query.exact_key.empty() && !query.prefix.empty()) {
+        throw std::invalid_argument("GGUF metadata query cannot combine exact key and prefix");
+    }
+
+    std::ostringstream output;
+    output << '[';
+    bool first = true;
+    for (const GgufMetadataEntry& entry : file.metadata) {
+        if (!gguf_metadata_matches(entry.key, query)) {
+            continue;
+        }
+        if (!first) {
+            output << ',';
+        }
+        first = false;
+        append_metadata_entry_json(output, entry, mode);
+    }
+    output << ']';
+    return output.str();
+}
+
+std::string gguf_metadata_report_json(const GgufFile& file, GgufMetadataQuery query) {
+    std::ostringstream output;
+    output << "{\"path\":\"" << json_escape(file.path.string()) << "\",\"version\":"
+           << file.version << ",\"metadata_count\":" << file.metadata_count
+           << ",\"selected_metadata_count\":" << gguf_metadata_match_count(file, query)
+           << ",\"metadata\":"
+           << gguf_metadata_entries_json(file, GgufMetadataJsonMode::full, query) << '}';
+    return output.str();
+}
 
 std::string gguf_summary_json(const GgufFile& file) {
     std::ostringstream output;
@@ -409,15 +565,9 @@ std::string gguf_summary_json(const GgufFile& file) {
            << file.version << ",\"tensor_count\":" << file.tensor_count
            << ",\"metadata_count\":" << file.metadata_count << ",\"alignment\":"
            << file.alignment << ",\"data_offset\":" << file.data_offset
-           << ",\"file_size\":" << file.file_size << ",\"metadata\":{";
-    for (std::size_t index = 0; index < file.metadata.size(); ++index) {
-        if (index != 0) {
-            output << ',';
-        }
-        output << '"' << json_escape(file.metadata[index].key) << "\":"
-               << value_json(file.metadata[index].value);
-    }
-    output << "},\"tensors\":[";
+           << ",\"file_size\":" << file.file_size << ",\"metadata\":"
+           << gguf_metadata_entries_json(file, GgufMetadataJsonMode::compact)
+           << ",\"tensors\":[";
     for (std::size_t index = 0; index < file.tensors.size(); ++index) {
         if (index != 0) {
             output << ',';

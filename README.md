@@ -1,8 +1,8 @@
 # Oracle Inference Engine
 
-Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1C adds safe, zero-copy access to GGUF tensor payloads while retaining the correctness-first CPU path and predictable-memory foundation from Phases 1A and 1B.
+Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1C.1 adds practical, filtered GGUF metadata export on top of the safe, zero-copy tensor access delivered in Phase 1C.
 
-## Current status — Phase 1C
+## Current status — Phase 1C.1
 
 Oracle is not yet a language-model runner or HTTP server. It now provides:
 
@@ -20,6 +20,9 @@ Oracle is not yet a language-model runner or HTTP server. It now provides:
 - `MappedGgufModel` validation for tensor bounds, block shapes, offsets, and overlaps
 - zero-copy named tensor views into mapped GGUF payloads
 - `oracle-gguf-inspect` metadata, verification, tensor lookup, and JSON modes
+- full machine-readable metadata export with exact-key and prefix filters
+- compact metadata summaries in normal inspection JSON so tokenizer arrays do not overwhelm reports
+- bounded human-readable previews for large arrays and long strings
 - structured text and JSON engine status
 - default future server endpoint: `http://127.0.0.1:5150`
 - correctness tests and a dependency-free benchmark harness
@@ -50,12 +53,26 @@ Run the vertical-slice demo and benchmark:
 ./build/oracle-bench --rows 64 --inner 256 --columns 256 --iterations 10
 ```
 
-Inspect GGUF metadata without mapping tensor payloads:
+Inspect GGUF structure without mapping tensor payloads:
 
 ```bash
 ./build/oracle-gguf-inspect /path/to/model.gguf
 ./build/oracle-gguf-inspect /path/to/model.gguf --json
 ```
+
+Export complete metadata values without tensor descriptors:
+
+```bash
+mkdir -p model-reports
+./build/oracle-gguf-inspect /path/to/model.gguf --metadata --json \
+  > model-reports/model-metadata.json
+./build/oracle-gguf-inspect /path/to/model.gguf \
+  --metadata-key general.architecture --json
+./build/oracle-gguf-inspect /path/to/model.gguf \
+  --metadata-prefix tokenizer.ggml. --json
+```
+
+Text metadata output uses bounded previews. JSON metadata mode preserves complete array and string values for tokenizer and model-manifest tooling.
 
 Map and validate the real tensor payloads:
 
@@ -65,7 +82,7 @@ Map and validate the real tensor payloads:
 ./build/oracle-gguf-inspect /path/to/model.gguf --tensor token_embd.weight
 ```
 
-Phase 1C validates and exposes weight bytes but does not decode quantized values or execute a real model yet.
+Phase 1C.1 validates and exports model metadata and weight locations, but does not decode quantized values or execute a real model yet.
 
 ## CUDA
 
@@ -76,7 +93,7 @@ cmake -S . -B build-cuda -DORACLE_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 ```
 
-The current CUDA translation unit is only a build hook. Phase 1C does not claim GPU execution yet.
+The current CUDA translation unit is only a build hook. Phase 1C.1 does not claim GPU execution yet.
 
 ## Design principles
 
@@ -87,4 +104,4 @@ The current CUDA translation unit is only a build hook. Phase 1C does not claim 
 5. **Incremental correctness:** begin with a simple CPU reference implementation, then accelerate.
 6. **Compatibility plus native control:** the future OpenAI-compatible API stays separate from Oracle's richer management and telemetry API.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), [`docs/PHASE_1C1.md`](docs/PHASE_1C1.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).

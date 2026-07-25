@@ -42,9 +42,11 @@ Phase 1A deliberately favors obvious scalar implementations over clever optimiza
 
 Owns model metadata, mapped weight views, and later graph construction. File-format parsing stays isolated from execution so GGUF compatibility does not become Oracle's internal architecture.
 
-`GgufReader` parses GGUF v2/v3 structure and tensor descriptors. `GgmlTypeLayout` describes how each supported storage type packs rows. `MappedGgufModel` validates payload ranges and exposes immutable `GgufTensorView` objects that point directly into the mapped file.
+`GgufReader` parses GGUF v2/v3 structure, typed metadata, and tensor descriptors. `GgmlTypeLayout` describes how each supported storage type packs rows. `MappedGgufModel` validates payload ranges and exposes immutable `GgufTensorView` objects that point directly into the mapped file.
 
-Quantized decoding and architecture mapping will be layered above these views rather than embedded in the binary reader or mapping code.
+Phase 1C.1 keeps metadata export in the model layer. Full typed JSON is available for tokenizer and manifest construction, while compact summaries retain scalar values and replace large arrays with their element type and length. Terminal previews are bounded independently of the parsed metadata so inspection remains readable without discarding information.
+
+Quantized decoding and architecture mapping will be layered above these views rather than embedded in the binary reader, metadata serializer, or mapping code.
 
 ### `runtime`
 
@@ -84,7 +86,8 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 - `MemoryArena`: bounded aligned execution storage with telemetry
 - `ScratchPlanner`: backend-neutral temporary-buffer layout
 - `MappedFile`: immutable mapped file bytes with RAII ownership
-- `GgufReader`: validated file structure and tensor descriptors
+- `GgufReader`: validated file structure, typed metadata, and tensor descriptors
+- GGUF metadata serializers: full filtered exports and compact inspection summaries
 - `GgmlTypeLayout`: block and byte layout for GGML storage types
 - `MappedGgufModel`: validated model mapping and tensor registry
 - `GgufTensorView`: immutable zero-copy weight bytes

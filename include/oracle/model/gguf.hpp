@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -101,7 +102,30 @@ public:
     [[nodiscard]] static GgufFile read(const std::filesystem::path& path);
 };
 
+struct GgufMetadataQuery {
+    std::string_view exact_key{};
+    std::string_view prefix{};
+};
+
+enum class GgufMetadataJsonMode {
+    full,
+    compact,
+};
+
+[[nodiscard]] bool gguf_metadata_matches(std::string_view key,
+                                         GgufMetadataQuery query) noexcept;
+[[nodiscard]] std::size_t gguf_metadata_match_count(const GgufFile& file,
+                                                    GgufMetadataQuery query = {}) noexcept;
 [[nodiscard]] std::string gguf_value_to_string(const GgufValue& value);
+[[nodiscard]] std::string gguf_value_preview(const GgufValue& value,
+                                             std::size_t max_array_items = 8,
+                                             std::size_t max_string_bytes = 160);
+[[nodiscard]] std::string gguf_metadata_entries_json(
+    const GgufFile& file,
+    GgufMetadataJsonMode mode = GgufMetadataJsonMode::full,
+    GgufMetadataQuery query = {});
+[[nodiscard]] std::string gguf_metadata_report_json(const GgufFile& file,
+                                                    GgufMetadataQuery query = {});
 [[nodiscard]] std::string gguf_summary_json(const GgufFile& file);
 
 }  // namespace oracle::model

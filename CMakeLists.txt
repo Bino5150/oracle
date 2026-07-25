@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(oracle_inference_engine VERSION 0.4.0 LANGUAGES CXX)
+project(oracle_inference_engine VERSION 0.4.1 LANGUAGES CXX)
 
 option(ORACLE_ENABLE_CUDA "Build the CUDA backend" OFF)
 option(ORACLE_BUILD_TESTS "Build tests" ON)
@@ -74,4 +74,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase1c-tests tests/test_phase1c.cpp)
     target_link_libraries(oracle-phase1c-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase1c-tests COMMAND oracle-phase1c-tests)
+
+    add_executable(oracle-phase1c1-tests tests/test_phase1c1.cpp)
+    target_link_libraries(oracle-phase1c1-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase1c1-tests COMMAND oracle-phase1c1-tests)
 endif()

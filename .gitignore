@@ -8,3 +8,4 @@
 *.dll
 *.dylib
 compile_commands.json
+/model-reports/

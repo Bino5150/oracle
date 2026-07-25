@@ -236,6 +236,8 @@ std::string mapped_gguf_summary_json(const MappedGgufModel& model) {
            << ",\"mapped_bytes\":" << stats.mapped_bytes
            << ",\"validated_payload_bytes\":" << stats.validated_payload_bytes
            << ",\"tensor_span_bytes\":" << stats.tensor_span_bytes
+           << ",\"metadata\":"
+           << gguf_metadata_entries_json(model.file(), GgufMetadataJsonMode::compact)
            << ",\"tensors\":[";
     for (std::size_t index = 0; index < model.tensors().size(); ++index) {
         if (index != 0) {

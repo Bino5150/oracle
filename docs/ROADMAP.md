@@ -49,22 +49,42 @@
 - [x] Verified GGUF inspection and named tensor lookup
 - [x] Synthetic corruption and lifecycle tests
 
-## Phase 1D — Transformer reference primitives
+## Phase 1C.1 — Practical metadata export
+
+- [x] Metadata-only inspection mode
+- [x] Complete typed JSON metadata export
+- [x] Exact-key and prefix filtering
+- [x] Compact metadata summaries in descriptor and verified JSON
+- [x] Bounded array and long-string previews for terminal output
+- [x] Metadata-export correctness tests
+
+## Phase 1D — Tokenizer and model manifest
+
+- [ ] Architecture and hyperparameter manifest extraction
+- [ ] Tokenizer vocabulary, merges, scores, and token-type loading
+- [ ] BOS, EOS, unknown, padding, and special-token IDs
+- [ ] Deterministic encode and decode
+- [ ] Byte fallback and unknown-token handling
+- [ ] Tokenizer round-trip tests
+- [ ] Tensor-name and dimension validation against the manifest
+
+## Phase 1E — Reference execution primitives
 
 - [ ] Embedding lookup
 - [ ] RoPE reference kernel
 - [ ] Causal masked attention reference kernel
+- [ ] Hybrid SSM reference-state representation
 - [ ] KV-cache reference representation
 - [ ] Minimal sampler
-- [ ] Tiny end-to-end transformer fixture
+- [ ] Tiny end-to-end model fixture
 
 ## Phase 2 — First real model family
 
 - [ ] F16 and BF16 reference decoding
-- [ ] Q8_0 reference decoding
-- [ ] Architecture mapping for one model family
+- [ ] Q5_K and Q6_K reference decoding
+- [ ] Architecture execution for the first supported hybrid model family
 - [ ] Quantization adapters separated from core tensor representation
-- [ ] Tokenizer integration
+- [ ] Optional MTP-head discovery and loading
 - [ ] Real prompt ingestion and token generation
 
 ## Phase 3 — CUDA backend
