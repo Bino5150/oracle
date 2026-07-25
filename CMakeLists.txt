@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(oracle_inference_engine VERSION 0.7.0 LANGUAGES CXX)
+project(oracle_inference_engine VERSION 0.8.0 LANGUAGES CXX)
 
 option(ORACLE_ENABLE_CUDA "Build the CUDA backend" OFF)
 option(ORACLE_BUILD_TESTS "Build tests" ON)
@@ -22,6 +22,7 @@ add_library(oracle_engine
     src/model/gguf.cpp
     src/model/mapped_gguf.cpp
     src/model/qwen35_manifest.cpp
+    src/model/qwen35_weights.cpp
     src/model/storage_decode.cpp
     src/model/model.cpp
     src/runtime/engine.cpp
@@ -69,6 +70,9 @@ target_link_libraries(oracle-cache-plan PRIVATE oracle_engine)
 add_executable(oracle-storage-row tools/storage_row.cpp)
 target_link_libraries(oracle-storage-row PRIVATE oracle_engine)
 
+add_executable(oracle-qwen35-bind tools/qwen35_bind.cpp)
+target_link_libraries(oracle-qwen35-bind PRIVATE oracle_engine)
+
 if(ORACLE_BUILD_EXAMPLES)
     add_executable(oracle-smoke examples/smoke.cpp)
     target_link_libraries(oracle-smoke PRIVATE oracle_engine)
@@ -111,4 +115,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase2a-tests tests/test_phase2a.cpp)
     target_link_libraries(oracle-phase2a-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase2a-tests COMMAND oracle-phase2a-tests)
+
+    add_executable(oracle-phase2b-tests tests/test_phase2b.cpp)
+    target_link_libraries(oracle-phase2b-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2b-tests COMMAND oracle-phase2b-tests)
 endif()
