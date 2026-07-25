@@ -58,15 +58,19 @@
 - [x] Bounded array and long-string previews for terminal output
 - [x] Metadata-export correctness tests
 
-## Phase 1D — Tokenizer and model manifest
+## Phase 1D — Tokenizer, model manifest, and chat formatting
 
-- [ ] Architecture and hyperparameter manifest extraction
-- [ ] Tokenizer vocabulary, merges, scores, and token-type loading
-- [ ] BOS, EOS, unknown, padding, and special-token IDs
-- [ ] Deterministic encode and decode
-- [ ] Byte fallback and unknown-token handling
-- [ ] Tokenizer round-trip tests
-- [ ] Tensor-name and dimension validation against the manifest
+- [x] Qwen3.5 architecture and hyperparameter manifest extraction
+- [x] Base-backbone and optional NextN/MTP-head separation
+- [x] Tokenizer vocabulary, merge ranks, and token-type loading
+- [x] Optional BOS, EOS, padding, and explicit special-token handling
+- [x] Unicode-aware Qwen3.5 pre-tokenization
+- [x] Deterministic GPT-2 byte-level BPE encode and decode
+- [x] Byte fallback and multilingual round trips
+- [x] Native system, reasoning, tool-call, and tool-response formatting
+- [x] Manifest and tokenizer CLI
+- [x] Tensor-name and dimension validation against the manifest
+- [x] Synthetic, sanitizer, and real-metadata reference validation
 
 ## Phase 1E — Reference execution primitives
 

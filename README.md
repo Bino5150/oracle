@@ -1,8 +1,8 @@
 # Oracle Inference Engine
 
-Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1C.1 adds practical, filtered GGUF metadata export on top of the safe, zero-copy tensor access delivered in Phase 1C.
+Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1D adds a validated Qwen3.5 model manifest, deterministic byte-level BPE tokenization, and native chat/tool prompt formatting on top of Oracle's safe GGUF foundation.
 
-## Current status — Phase 1C.1
+## Current status — Phase 1D
 
 Oracle is not yet a language-model runner or HTTP server. It now provides:
 
@@ -23,6 +23,12 @@ Oracle is not yet a language-model runner or HTTP server. It now provides:
 - full machine-readable metadata export with exact-key and prefix filters
 - compact metadata summaries in normal inspection JSON so tokenizer arrays do not overwhelm reports
 - bounded human-readable previews for large arrays and long strings
+- validated `Qwen35Manifest` extraction, including 33-total/32-backbone MTP separation
+- dependency-free Qwen3.5 GPT-2 byte-level BPE tokenization
+- compiled Unicode 15.1 letter, mark, number, and whitespace classification
+- explicit special-token parsing and optional special-token skipping on decode
+- native Qwen3.5 system, reasoning, tool-call, and tool-response chat formatting
+- `oracle-tokenize` manifest, encode, decode, and chat modes
 - structured text and JSON engine status
 - default future server endpoint: `http://127.0.0.1:5150`
 - correctness tests and a dependency-free benchmark harness
@@ -82,7 +88,18 @@ Map and validate the real tensor payloads:
 ./build/oracle-gguf-inspect /path/to/model.gguf --tensor token_embd.weight
 ```
 
-Phase 1C.1 validates and exports model metadata and weight locations, but does not decode quantized values or execute a real model yet.
+Inspect the Qwen3.5 manifest and tokenize text:
+
+```bash
+./build/oracle-tokenize /path/to/model.gguf --manifest
+./build/oracle-tokenize /path/to/model.gguf --encode "Hello Oracle" --json
+./build/oracle-tokenize /path/to/model.gguf \
+  --chat-system "You are Lumina." \
+  --chat-user "Hello Oracle." \
+  --tokenize-chat --json
+```
+
+Phase 1D understands model metadata, text, special tokens, and prompt framing, but it does not decode quantized weights or execute the model yet.
 
 ## CUDA
 
@@ -93,7 +110,7 @@ cmake -S . -B build-cuda -DORACLE_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 ```
 
-The current CUDA translation unit is only a build hook. Phase 1C.1 does not claim GPU execution yet.
+The current CUDA translation unit is only a build hook. Phase 1D does not claim GPU execution yet.
 
 ## Design principles
 
@@ -104,4 +121,4 @@ The current CUDA translation unit is only a build hook. Phase 1C.1 does not clai
 5. **Incremental correctness:** begin with a simple CPU reference implementation, then accelerate.
 6. **Compatibility plus native control:** the future OpenAI-compatible API stays separate from Oracle's richer management and telemetry API.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), [`docs/PHASE_1C1.md`](docs/PHASE_1C1.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), [`docs/PHASE_1C1.md`](docs/PHASE_1C1.md), [`docs/PHASE_1D.md`](docs/PHASE_1D.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).

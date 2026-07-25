@@ -15,6 +15,8 @@ Lumina / CLI / OpenAI-compatible API (planned)
                      |
        Core tensor / arena / scratch planning
                      |
+      Qwen3.5 manifest / tokenizer / chat formatter
+                     |
       Mapped GGUF model / GGML storage layouts
                      |
             GGUF structure reader
@@ -48,9 +50,17 @@ Phase 1C.1 keeps metadata export in the model layer. Full typed JSON is availabl
 
 Quantized decoding and architecture mapping will be layered above these views rather than embedded in the binary reader, metadata serializer, or mapping code.
 
+Phase 1D adds `Qwen35Manifest`, a typed boundary between generic GGUF metadata and architecture execution. It resolves optional NextN/MTP layers separately from the shared backbone and validates tokenizer cardinality plus embedding dimensions when descriptors are available.
+
+### `tokenizer`
+
+Owns text segmentation, byte encoding, BPE merge ranks, token IDs, and decoding. `Qwen35Tokenizer` requires the GGUF-declared `gpt2` tokenizer model and `qwen35` pre-tokenizer, validates all 256 byte tokens, and keeps special-token parsing opt-in. Unicode categories are compiled data rather than locale-sensitive runtime calls.
+
 ### `runtime`
 
 Coordinates engine lifecycle, backend selection, allocation, prompt ingestion, decode steps, cancellation, and telemetry.
+
+The runtime layer also owns `format_qwen35_chat`, a typed implementation of the target model's message, reasoning, tool-call, and tool-response framing. It deliberately does not embed a general Jinja interpreter.
 
 `ReferencePipeline` is the first vertical slice through the runtime and backend layers:
 
@@ -90,6 +100,9 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 - GGUF metadata serializers: full filtered exports and compact inspection summaries
 - `GgmlTypeLayout`: block and byte layout for GGML storage types
 - `MappedGgufModel`: validated model mapping and tensor registry
+- `Qwen35Manifest`: validated architecture and MTP/backbone metadata
+- `Qwen35Tokenizer`: Unicode-aware byte-level BPE encode/decode
+- `format_qwen35_chat`: native message, reasoning, and tool prompt framing
 - `GgufTensorView`: immutable zero-copy weight bytes
 - `Model`: future architecture metadata and weight ownership policy
 - `Engine`: lifecycle, configuration, and status reporting
@@ -99,7 +112,7 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 ## Current non-goals
 
 - Decoding F16, BF16, or quantized weight values
-- Tokenization and sampling
+- Sampling and model execution
 - Real transformer attention
 - HTTP serving
 - CUDA graph capture

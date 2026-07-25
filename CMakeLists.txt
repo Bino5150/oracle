@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(oracle_inference_engine VERSION 0.4.1 LANGUAGES CXX)
+project(oracle_inference_engine VERSION 0.5.0 LANGUAGES CXX)
 
 option(ORACLE_ENABLE_CUDA "Build the CUDA backend" OFF)
 option(ORACLE_BUILD_TESTS "Build tests" ON)
@@ -20,10 +20,13 @@ add_library(oracle_engine
     src/model/ggml_type.cpp
     src/model/gguf.cpp
     src/model/mapped_gguf.cpp
+    src/model/qwen35_manifest.cpp
     src/model/model.cpp
     src/runtime/engine.cpp
     src/runtime/reference_pipeline.cpp
+    src/runtime/qwen35_chat.cpp
     src/scheduler/scheduler.cpp
+    src/tokenizer/qwen35_tokenizer.cpp
 )
 
 target_include_directories(oracle_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -47,6 +50,9 @@ target_link_libraries(oracle-cli PRIVATE oracle_engine)
 
 add_executable(oracle-gguf-inspect tools/gguf_inspect.cpp)
 target_link_libraries(oracle-gguf-inspect PRIVATE oracle_engine)
+
+add_executable(oracle-tokenize tools/tokenize.cpp)
+target_link_libraries(oracle-tokenize PRIVATE oracle_engine)
 
 if(ORACLE_BUILD_EXAMPLES)
     add_executable(oracle-smoke examples/smoke.cpp)
@@ -78,4 +84,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase1c1-tests tests/test_phase1c1.cpp)
     target_link_libraries(oracle-phase1c1-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase1c1-tests COMMAND oracle-phase1c1-tests)
+
+    add_executable(oracle-phase1d-tests tests/test_phase1d.cpp)
+    target_link_libraries(oracle-phase1d-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase1d-tests COMMAND oracle-phase1d-tests)
 endif()
