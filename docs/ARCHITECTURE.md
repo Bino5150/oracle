@@ -7,7 +7,9 @@ Lumina / CLI / OpenAI-compatible API (planned)
                      |
                Runtime Engine
                  |       |
-          Scheduler   Reference Pipeline
+          Scheduler   Reference Execution
+                     |       |
+              Hybrid Cache  Sampler
                      |
               Backend Interface
                  |         |
@@ -62,7 +64,11 @@ Coordinates engine lifecycle, backend selection, allocation, prompt ingestion, d
 
 The runtime layer also owns `format_qwen35_chat`, a typed implementation of the target model's message, reasoning, tool-call, and tool-response framing. It deliberately does not embed a general Jinja interpreter.
 
-`ReferencePipeline` is the first vertical slice through the runtime and backend layers:
+Phase 1E adds the stateful numerical reference layer. `KvCache` owns bounded full-attention keys and values. `SsmState` owns causal-convolution history plus the recurrent Gated DeltaNet matrix. `HybridCache` assigns the correct state type to every backbone block, while `plan_qwen35_cache` computes exact reference memory without allocation. Reference kernels cover embedding lookup, interleaved Qwen3.5 RoPE, causal grouped-query attention, causal depthwise convolution, and recurrent gated-delta updates. `Sampler` remains independent of model math.
+
+`TinyHybridModel` composes these primitives into a deterministic synthetic decoder. It exists to prove state lifecycle and cached-versus-replayed parity; it is not the real Qwen3.5 architecture.
+
+`ReferencePipeline` is the original stateless vertical slice through the runtime and backend layers:
 
 ```text
 input
@@ -103,6 +109,11 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 - `Qwen35Manifest`: validated architecture and MTP/backbone metadata
 - `Qwen35Tokenizer`: Unicode-aware byte-level BPE encode/decode
 - `format_qwen35_chat`: native message, reasoning, and tool prompt framing
+- `KvCache`, `SsmState`, and `HybridCache`: bounded state ownership
+- `plan_qwen35_cache`: exact reference-state memory planning
+- reference execution kernels: embeddings, RoPE, attention, convolution, and gated delta
+- `Sampler`: deterministic logit filtering and token selection
+- `TinyHybridModel`: cached stateful end-to-end correctness fixture
 - `GgufTensorView`: immutable zero-copy weight bytes
 - `Model`: future architecture metadata and weight ownership policy
 - `Engine`: lifecycle, configuration, and status reporting
@@ -112,8 +123,8 @@ The configured default endpoint is `127.0.0.1:5150`. The current engine records 
 ## Current non-goals
 
 - Decoding F16, BF16, or quantized weight values
-- Sampling and model execution
-- Real transformer attention
+- Real quantized-checkpoint execution
+- Production architecture tensor binding
 - HTTP serving
 - CUDA graph capture
 - Paged or quantized KV cache

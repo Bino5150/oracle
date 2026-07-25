@@ -74,13 +74,17 @@
 
 ## Phase 1E — Reference execution primitives
 
-- [ ] Embedding lookup
-- [ ] RoPE reference kernel
-- [ ] Causal masked attention reference kernel
-- [ ] Hybrid SSM reference-state representation
-- [ ] KV-cache reference representation
-- [ ] Minimal sampler
-- [ ] Tiny end-to-end model fixture
+- [x] Embedding lookup
+- [x] Partial and interleaved Qwen3.5 RoPE reference kernel
+- [x] Grouped-query causal attention reference kernel
+- [x] Causal depthwise-convolution state
+- [x] Recurrent Gated DeltaNet reference update
+- [x] Hybrid SSM/KV per-block state representation
+- [x] Exact F32 cache-memory planner
+- [x] Greedy, temperature, top-k, top-p, and seeded sampler
+- [x] Tiny stateful hybrid model fixture
+- [x] Cached decode versus full replay parity
+- [x] Cache-plan and reference-decode CLIs
 
 ## Phase 2 — First real model family
 

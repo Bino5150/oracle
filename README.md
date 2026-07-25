@@ -1,8 +1,8 @@
 # Oracle Inference Engine
 
-Oracle is a local-first inference runtime aimed at efficient transformer execution on constrained consumer hardware. Phase 1D adds a validated Qwen3.5 model manifest, deterministic byte-level BPE tokenization, and native chat/tool prompt formatting on top of Oracle's safe GGUF foundation.
+Oracle is a local-first inference runtime aimed at efficient hybrid-model execution on constrained consumer hardware. Phase 1E adds stateful CPU reference execution: embeddings, Qwen3.5 RoPE, grouped-query causal attention, Gated DeltaNet recurrent state, deterministic sampling, and exact cache-memory planning.
 
-## Current status — Phase 1D
+## Current status — Phase 1E
 
 Oracle is not yet a language-model runner or HTTP server. It now provides:
 
@@ -29,6 +29,15 @@ Oracle is not yet a language-model runner or HTTP server. It now provides:
 - explicit special-token parsing and optional special-token skipping on decode
 - native Qwen3.5 system, reasoning, tool-call, and tool-response chat formatting
 - `oracle-tokenize` manifest, encode, decode, and chat modes
+- checked embedding lookup and Qwen3.5 partial/interleaved RoPE
+- bounded full-attention KV caches and hybrid per-block state ownership
+- causal depthwise-convolution history for linear-attention blocks
+- recurrent Gated DeltaNet CPU reference updates
+- grouped-query single-token causal attention
+- exact Qwen3.5 F32 reference cache planning without allocation
+- greedy, temperature, top-k, top-p, and seeded sampling
+- deterministic tiny hybrid decoder with cached-versus-replayed parity
+- `oracle-cache-plan` and `oracle-reference-decode` CLIs
 - structured text and JSON engine status
 - default future server endpoint: `http://127.0.0.1:5150`
 - correctness tests and a dependency-free benchmark harness
@@ -99,7 +108,21 @@ Inspect the Qwen3.5 manifest and tokenize text:
   --tokenize-chat --json
 ```
 
-Phase 1D understands model metadata, text, special tokens, and prompt framing, but it does not decode quantized weights or execute the model yet.
+Plan the reference cache for a real Qwen3.5 GGUF without allocating it:
+
+```bash
+./build/oracle-cache-plan /path/to/model.gguf --tokens 4096
+./build/oracle-cache-plan /path/to/model.gguf --tokens 4096 --json
+```
+
+Run the deterministic tiny hybrid execution fixture:
+
+```bash
+./build/oracle-reference-decode
+./build/oracle-reference-decode --temperature 0.8 --top-k 4 --top-p 0.9 --json
+```
+
+Phase 1E executes synthetic F32 reference weights and state, but it still does not decode or run the real quantized checkpoint.
 
 ## CUDA
 
@@ -110,7 +133,7 @@ cmake -S . -B build-cuda -DORACLE_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 ```
 
-The current CUDA translation unit is only a build hook. Phase 1D does not claim GPU execution yet.
+The current CUDA translation unit is only a build hook. Phase 1E does not claim GPU execution yet.
 
 ## Design principles
 
@@ -121,4 +144,4 @@ The current CUDA translation unit is only a build hook. Phase 1D does not claim 
 5. **Incremental correctness:** begin with a simple CPU reference implementation, then accelerate.
 6. **Compatibility plus native control:** the future OpenAI-compatible API stays separate from Oracle's richer management and telemetry API.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), [`docs/PHASE_1C1.md`](docs/PHASE_1C1.md), [`docs/PHASE_1D.md`](docs/PHASE_1D.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/PHASE_1A.md`](docs/PHASE_1A.md), [`docs/PHASE_1B.md`](docs/PHASE_1B.md), [`docs/PHASE_1C.md`](docs/PHASE_1C.md), [`docs/PHASE_1C1.md`](docs/PHASE_1C1.md), [`docs/PHASE_1D.md`](docs/PHASE_1D.md), [`docs/PHASE_1E.md`](docs/PHASE_1E.md), and [`docs/ROADMAP.md`](docs/ROADMAP.md).
