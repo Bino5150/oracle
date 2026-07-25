@@ -1,6 +1,7 @@
 #include "oracle/model/storage_decode.hpp"
 
 #include "oracle/model/ggml_type.hpp"
+#include "oracle/model/mapped_gguf.hpp"
 
 #include <bit>
 #include <limits>
@@ -169,6 +170,50 @@ StorageRowView make_storage_row_view(std::uint32_t type,
                                     std::to_string(type));
     }
     return StorageRowView{type, element_count, bytes};
+}
+
+std::size_t gguf_tensor_row_count(const GgufTensorView& tensor) {
+    const auto dimensions = tensor.dimensions();
+    if (dimensions.empty()) {
+        throw std::invalid_argument("GGUF tensor must have at least one dimension");
+    }
+
+    const std::uint64_t row_elements = dimensions.front();
+    const std::uint64_t total_elements = tensor.element_count();
+    if (row_elements == 0 || total_elements % row_elements != 0) {
+        throw std::logic_error("GGUF tensor has invalid row geometry");
+    }
+    return checked_size(total_elements / row_elements, "GGUF tensor row count");
+}
+
+StorageRowView make_storage_row_view(const GgufTensorView& tensor,
+                                     std::size_t row_index) {
+    const auto dimensions = tensor.dimensions();
+    if (dimensions.empty()) {
+        throw std::invalid_argument("GGUF tensor must have at least one dimension");
+    }
+
+    const std::size_t row_elements = checked_size(dimensions.front(), "GGUF tensor row width");
+    const std::size_t row_count = gguf_tensor_row_count(tensor);
+    if (row_index >= row_count) {
+        throw std::out_of_range("GGUF tensor row index exceeds row count");
+    }
+
+    const std::size_t row_bytes = checked_size(
+        ggml_row_byte_size(dimensions.front(), tensor.layout().type),
+        "GGUF tensor row byte size");
+    if (row_count != 0 && row_bytes > std::numeric_limits<std::size_t>::max() / row_count) {
+        throw std::overflow_error("GGUF tensor byte size exceeds addressable size");
+    }
+    const std::size_t expected_tensor_bytes = row_bytes * row_count;
+    if (tensor.bytes().size() != expected_tensor_bytes) {
+        throw std::invalid_argument("GGUF tensor byte size does not match row geometry");
+    }
+
+    const std::size_t offset = row_index * row_bytes;
+    return make_storage_row_view(tensor.layout().type,
+                                 row_elements,
+                                 tensor.bytes().subspan(offset, row_bytes));
 }
 
 void decode_storage_row(StorageRowView row, std::span<float> output) {

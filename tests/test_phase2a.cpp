@@ -1,5 +1,7 @@
 #include "oracle/backend/cpu/quantized_reference.hpp"
 #include "oracle/model/storage_decode.hpp"
+#include "oracle/model/ggml_type.hpp"
+#include "oracle/model/mapped_gguf.hpp"
 
 #include <algorithm>
 #include <array>
@@ -200,6 +202,55 @@ void test_reference_dot_and_matvec() {
                  "Q6_K reference dot mismatch");
 }
 
+
+void test_mapped_tensor_row_adapter() {
+    const auto q5 = q5_fixture();
+    std::array<std::byte, oracle::model::q5_k_block_bytes * 2> matrix{};
+    std::copy(q5.begin(), q5.end(), matrix.begin());
+    auto second = q5;
+    std::fill(second.begin() + 16, second.end(), std::byte{0x00});
+    std::copy(second.begin(), second.end(),
+              matrix.begin() + oracle::model::q5_k_block_bytes);
+
+    oracle::model::GgufTensorInfo info{
+        "adapter.weight", {oracle::model::qk_k, 2}, oracle::model::ggml_type_q5_k, 0};
+    const auto* layout = oracle::model::ggml_type_layout(oracle::model::ggml_type_q5_k);
+    require(layout != nullptr, "Q5_K layout must exist for mapped adapter test");
+    const oracle::model::GgufTensorView tensor(
+        &info, layout, matrix.data(), matrix.size(), 4096);
+
+    require(oracle::model::gguf_tensor_row_count(tensor) == 2,
+            "mapped tensor row count mismatch");
+    const auto first_row = oracle::model::make_storage_row_view(tensor, 0);
+    const auto second_row = oracle::model::make_storage_row_view(tensor, 1);
+    require(first_row.bytes.data() == tensor.bytes().data(),
+            "first mapped row must begin at tensor storage");
+    require(second_row.bytes.data() ==
+                tensor.bytes().data() + oracle::model::q5_k_block_bytes,
+            "second mapped row must advance by exact row bytes");
+
+    std::array<float, oracle::model::qk_k> ones{};
+    ones.fill(1.0F);
+    require_near(oracle::backend::cpu::reference_storage_dot(first_row, ones),
+                 4288.0F,
+                 0.0F,
+                 "mapped first-row dot mismatch");
+    require_near(oracle::backend::cpu::reference_storage_dot(second_row, ones),
+                 -192.0F,
+                 0.0F,
+                 "mapped second-row dot mismatch");
+
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(tensor, 2)); },
+        "mapped tensor adapter must reject an out-of-range row");
+
+    const oracle::model::GgufTensorView malformed(
+        &info, layout, matrix.data(), matrix.size() - 1, 4096);
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(malformed, 0)); },
+        "mapped tensor adapter must reject inconsistent tensor byte geometry");
+}
+
 void test_validation() {
     std::array<std::byte, 2> bytes{};
     require_throws(
@@ -232,6 +283,7 @@ int main() {
         test_q5_k_known_answer();
         test_q6_k_known_answer();
         test_reference_dot_and_matvec();
+        test_mapped_tensor_row_adapter();
         test_validation();
         std::cout << "Phase 2A storage decoding tests passed\n";
     } catch (const std::exception& error) {

@@ -6,6 +6,8 @@
 
 namespace oracle::model {
 
+class GgufTensorView;
+
 inline constexpr std::uint32_t ggml_type_f16 = 1;
 inline constexpr std::uint32_t ggml_type_q5_k = 13;
 inline constexpr std::uint32_t ggml_type_q6_k = 14;
@@ -27,6 +29,10 @@ struct StorageRowView {
 [[nodiscard]] StorageRowView make_storage_row_view(std::uint32_t type,
                                                    std::size_t element_count,
                                                    std::span<const std::byte> bytes);
+
+[[nodiscard]] std::size_t gguf_tensor_row_count(const GgufTensorView& tensor);
+[[nodiscard]] StorageRowView make_storage_row_view(const GgufTensorView& tensor,
+                                                   std::size_t row_index);
 
 void decode_storage_row(StorageRowView row, std::span<float> output);
 

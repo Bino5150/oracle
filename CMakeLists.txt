@@ -66,6 +66,9 @@ target_link_libraries(oracle-reference-decode PRIVATE oracle_engine)
 add_executable(oracle-cache-plan tools/cache_plan.cpp)
 target_link_libraries(oracle-cache-plan PRIVATE oracle_engine)
 
+add_executable(oracle-storage-row tools/storage_row.cpp)
+target_link_libraries(oracle-storage-row PRIVATE oracle_engine)
+
 if(ORACLE_BUILD_EXAMPLES)
     add_executable(oracle-smoke examples/smoke.cpp)
     target_link_libraries(oracle-smoke PRIVATE oracle_engine)
