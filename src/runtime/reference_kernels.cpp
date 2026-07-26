@@ -281,10 +281,12 @@ void gated_delta_step(const core::Tensor& query,
             q_norm += q * q;
             k_norm += k * k;
         }
+        const double q_length = std::sqrt(q_norm);
+        const double k_length = std::sqrt(k_norm);
         const float inverse_q = static_cast<float>(
-            1.0 / std::sqrt(q_norm + static_cast<double>(normalization_epsilon)));
+            1.0 / std::max(q_length, static_cast<double>(normalization_epsilon)));
         const float inverse_k = static_cast<float>(
-            1.0 / std::sqrt(k_norm + static_cast<double>(normalization_epsilon)));
+            1.0 / std::max(k_length, static_cast<double>(normalization_epsilon)));
         for (std::size_t dimension = 0; dimension < key_dimension; ++dimension) {
             normalized_query[dimension] =
                 q_values[qk_base + dimension] * inverse_q * query_scale;

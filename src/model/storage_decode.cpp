@@ -20,6 +20,17 @@ namespace {
     return raw < 0x80U ? static_cast<int>(raw) : static_cast<int>(raw) - 256;
 }
 
+[[nodiscard]] std::uint32_t load_u32_le(std::span<const std::byte> bytes,
+                                        std::size_t offset) {
+    if (offset > bytes.size() || bytes.size() - offset < 4) {
+        throw std::out_of_range("32-bit storage read exceeds row bounds");
+    }
+    return static_cast<std::uint32_t>(byte_value(bytes[offset])) |
+           (static_cast<std::uint32_t>(byte_value(bytes[offset + 1])) << 8U) |
+           (static_cast<std::uint32_t>(byte_value(bytes[offset + 2])) << 16U) |
+           (static_cast<std::uint32_t>(byte_value(bytes[offset + 3])) << 24U);
+}
+
 [[nodiscard]] std::uint16_t load_u16_le(std::span<const std::byte> bytes,
                                         std::size_t offset) {
     if (offset > bytes.size() || bytes.size() - offset < 2) {
@@ -164,8 +175,8 @@ StorageRowView make_storage_row_view(std::uint32_t type,
                                     std::to_string(expected) + ", received " +
                                     std::to_string(bytes.size()));
     }
-    if (type != ggml_type_f16 && type != ggml_type_bf16 && type != ggml_type_q5_k &&
-        type != ggml_type_q6_k) {
+    if (type != ggml_type_f32 && type != ggml_type_f16 && type != ggml_type_bf16 &&
+        type != ggml_type_q5_k && type != ggml_type_q6_k) {
         throw std::invalid_argument("storage decoder does not support GGML type " +
                                     std::to_string(type));
     }
@@ -220,6 +231,13 @@ void decode_storage_row(StorageRowView row, std::span<float> output) {
     const StorageRowView validated = make_storage_row_view(row.type, row.element_count, row.bytes);
     if (output.size() != validated.element_count) {
         throw std::invalid_argument("decoded row output size mismatch");
+    }
+
+    if (validated.type == ggml_type_f32) {
+        for (std::size_t index = 0; index < validated.element_count; ++index) {
+            output[index] = std::bit_cast<float>(load_u32_le(validated.bytes, index * 4));
+        }
+        return;
     }
 
     if (validated.type == ggml_type_f16 || validated.type == ggml_type_bf16) {

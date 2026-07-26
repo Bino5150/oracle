@@ -8,6 +8,7 @@ namespace oracle::model {
 
 class GgufTensorView;
 
+inline constexpr std::uint32_t ggml_type_f32 = 0;
 inline constexpr std::uint32_t ggml_type_f16 = 1;
 inline constexpr std::uint32_t ggml_type_q5_k = 13;
 inline constexpr std::uint32_t ggml_type_q6_k = 14;
