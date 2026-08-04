@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(oracle_inference_engine VERSION 0.9.0 LANGUAGES CXX)
+project(oracle_inference_engine VERSION 1.0.0 LANGUAGES CXX)
 
 option(ORACLE_ENABLE_CUDA "Build the CUDA backend" OFF)
 option(ORACLE_BUILD_TESTS "Build tests" ON)
@@ -29,6 +29,7 @@ add_library(oracle_engine
     src/runtime/reference_pipeline.cpp
     src/runtime/qwen35_chat.cpp
     src/runtime/qwen35_block.cpp
+    src/runtime/qwen35_forward.cpp
     src/runtime/hybrid_cache.cpp
     src/runtime/reference_kernels.cpp
     src/runtime/sampler.cpp
@@ -76,6 +77,9 @@ target_link_libraries(oracle-qwen35-bind PRIVATE oracle_engine)
 
 add_executable(oracle-qwen35-block tools/qwen35_block.cpp)
 target_link_libraries(oracle-qwen35-block PRIVATE oracle_engine)
+
+add_executable(oracle-qwen35-forward tools/qwen35_forward.cpp)
+target_link_libraries(oracle-qwen35-forward PRIVATE oracle_engine)
 
 if(ORACLE_BUILD_EXAMPLES)
     add_executable(oracle-smoke examples/smoke.cpp)
@@ -127,4 +131,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase2c-tests tests/test_phase2c.cpp)
     target_link_libraries(oracle-phase2c-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase2c-tests COMMAND oracle-phase2c-tests)
+
+    add_executable(oracle-phase2d-tests tests/test_phase2d.cpp)
+    target_link_libraries(oracle-phase2d-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2d-tests COMMAND oracle-phase2d-tests)
 endif()
