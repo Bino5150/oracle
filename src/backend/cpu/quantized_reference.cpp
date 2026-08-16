@@ -47,6 +47,23 @@ float reference_storage_dot(model::StorageRowView row, std::span<const float> ve
         return sum;
     }
 
+    if (validated.type == model::ggml_type_q8_0) {
+        constexpr std::size_t q8_0_block_elements = model::q8_0_block_elements;
+        std::array<float, q8_0_block_elements> decoded_q8{};
+        for (std::size_t offset = 0, element = 0; offset < validated.bytes.size();
+             offset += model::q8_0_block_bytes, element += q8_0_block_elements) {
+            model::decode_storage_row(
+                model::make_storage_row_view(
+                    validated.type, q8_0_block_elements,
+                    validated.bytes.subspan(offset, model::q8_0_block_bytes)),
+                decoded_q8);
+            for (std::size_t lane = 0; lane < q8_0_block_elements; ++lane) {
+                sum += decoded_q8[lane] * vector[element + lane];
+            }
+        }
+        return sum;
+    }
+
     const std::size_t block_bytes = validated.type == model::ggml_type_q5_k
                                         ? model::q5_k_block_bytes
                                         : model::q6_k_block_bytes;

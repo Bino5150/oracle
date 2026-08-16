@@ -174,6 +174,13 @@ void KvCache::reset() noexcept {
     std::ranges::fill(values_, 0.0F);
 }
 
+void KvCache::truncate(std::size_t new_length) {
+    if (new_length > length_) {
+        throw std::invalid_argument("KV cache truncate must not grow state");
+    }
+    length_ = new_length;
+}
+
 std::size_t KvCache::size() const noexcept { return length_; }
 std::size_t KvCache::capacity() const noexcept { return maximum_tokens_; }
 std::size_t KvCache::key_value_heads() const noexcept { return key_value_heads_; }
@@ -231,6 +238,7 @@ void SsmState::reset() noexcept {
 }
 
 void SsmState::advance() noexcept { ++sequence_length_; }
+void SsmState::restore_sequence_length(std::size_t value) noexcept { sequence_length_ = value; }
 std::size_t SsmState::sequence_length() const noexcept { return sequence_length_; }
 std::size_t SsmState::convolution_channels() const noexcept { return convolution_channels_; }
 std::size_t SsmState::convolution_kernel() const noexcept { return convolution_kernel_; }
@@ -345,6 +353,55 @@ const SsmState& HybridCache::ssm(std::size_t block_index) const {
 void HybridCache::reset() noexcept {
     for (HybridLayerState& layer : layers_) {
         std::visit([](auto& state) { state.reset(); }, layer);
+    }
+}
+
+HybridCacheBoundary HybridCache::mark_boundary() const {
+    HybridCacheBoundary boundary;
+    boundary.sequence_length_ = sequence_length();
+    for (const HybridLayerState& layer : layers_) {
+        if (const auto* state = std::get_if<SsmState>(&layer)) {
+            const auto recurrent = state->recurrent();
+            const auto convolution = state->convolution_history();
+            boundary.recurrent_snapshots_.emplace_back(recurrent.begin(), recurrent.end());
+            boundary.convolution_snapshots_.emplace_back(convolution.begin(), convolution.end());
+        }
+    }
+    return boundary;
+}
+
+void HybridCache::truncate_to(const HybridCacheBoundary& boundary) {
+    if (boundary.sequence_length_ > sequence_length()) {
+        throw std::invalid_argument("hybrid cache truncate_to must not grow state");
+    }
+
+    std::size_t ssm_index = 0;
+    for (HybridLayerState& layer : layers_) {
+        if (auto* cache = std::get_if<KvCache>(&layer)) {
+            cache->truncate(boundary.sequence_length_);
+            continue;
+        }
+
+        auto& state = std::get<SsmState>(layer);
+        if (ssm_index >= boundary.recurrent_snapshots_.size() ||
+            ssm_index >= boundary.convolution_snapshots_.size()) {
+            throw std::invalid_argument(
+                "hybrid cache boundary does not match this cache's SSM layer count");
+        }
+        const auto& recurrent_snapshot = boundary.recurrent_snapshots_[ssm_index];
+        const auto& convolution_snapshot = boundary.convolution_snapshots_[ssm_index];
+        if (recurrent_snapshot.size() != state.recurrent().size() ||
+            convolution_snapshot.size() != state.convolution_history().size()) {
+            throw std::invalid_argument("hybrid cache boundary SSM buffer shape mismatch");
+        }
+        ++ssm_index;
+
+        if (state.sequence_length() == boundary.sequence_length_) {
+            continue;  // already at the boundary; no restore needed
+        }
+        std::ranges::copy(recurrent_snapshot, state.recurrent().begin());
+        std::ranges::copy(convolution_snapshot, state.convolution_history().begin());
+        state.restore_sequence_length(boundary.sequence_length_);
     }
 }
 

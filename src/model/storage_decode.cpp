@@ -124,6 +124,20 @@ void decode_q6_k_block(std::span<const std::byte, q6_k_block_bytes> block,
     }
 }
 
+// GGML block_q8_0 layout (ggml/src/ggml-common.h): { ggml_half d; int8_t qs[32]; },
+// sizeof == 2 + 32 == 34 bytes. Dequantization (ggml/src/ggml-quants.c,
+// dequantize_row_q8_0): y[j] = qs[j] * fp16_to_f32(d) for j in [0, 32) — a pure
+// per-block scale, no zero-point/minimum, matching Q5_K/Q6_K's shared f16_to_f32
+// delta decode already validated by the Phase 2D/2E numerical gates.
+void decode_q8_0_block(std::span<const std::byte, q8_0_block_bytes> block,
+                       std::span<float, q8_0_block_elements> output) {
+    const float d = f16_to_f32(load_u16_le(block, 0));
+    const auto quants = block.subspan<2, q8_0_block_elements>();
+    for (std::size_t index = 0; index < q8_0_block_elements; ++index) {
+        output[index] = d * static_cast<float>(signed_byte_value(quants[index]));
+    }
+}
+
 [[nodiscard]] std::size_t checked_size(std::uint64_t value, const char* context) {
     if (value > std::numeric_limits<std::size_t>::max()) {
         throw std::overflow_error(std::string(context) + " exceeds addressable size");
@@ -176,7 +190,7 @@ StorageRowView make_storage_row_view(std::uint32_t type,
                                     std::to_string(bytes.size()));
     }
     if (type != ggml_type_f32 && type != ggml_type_f16 && type != ggml_type_bf16 &&
-        type != ggml_type_q5_k && type != ggml_type_q6_k) {
+        type != ggml_type_q5_k && type != ggml_type_q6_k && type != ggml_type_q8_0) {
         throw std::invalid_argument("storage decoder does not support GGML type " +
                                     std::to_string(type));
     }
@@ -245,6 +259,18 @@ void decode_storage_row(StorageRowView row, std::span<float> output) {
             const std::uint16_t bits = load_u16_le(validated.bytes, index * 2);
             output[index] = validated.type == ggml_type_f16 ? f16_to_f32(bits)
                                                             : bf16_to_f32(bits);
+        }
+        return;
+    }
+
+    if (validated.type == ggml_type_q8_0) {
+        for (std::size_t offset = 0, element = 0; offset < validated.bytes.size();
+             offset += q8_0_block_bytes, element += q8_0_block_elements) {
+            decode_q8_0_block(
+                std::span<const std::byte, q8_0_block_bytes>(validated.bytes.data() + offset,
+                                                              q8_0_block_bytes),
+                std::span<float, q8_0_block_elements>(output.data() + element,
+                                                       q8_0_block_elements));
         }
         return;
     }

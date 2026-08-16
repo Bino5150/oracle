@@ -10,6 +10,7 @@ class GgufTensorView;
 
 inline constexpr std::uint32_t ggml_type_f32 = 0;
 inline constexpr std::uint32_t ggml_type_f16 = 1;
+inline constexpr std::uint32_t ggml_type_q8_0 = 8;
 inline constexpr std::uint32_t ggml_type_q5_k = 13;
 inline constexpr std::uint32_t ggml_type_q6_k = 14;
 inline constexpr std::uint32_t ggml_type_bf16 = 30;
@@ -17,6 +18,8 @@ inline constexpr std::uint32_t ggml_type_bf16 = 30;
 inline constexpr std::size_t qk_k = 256;
 inline constexpr std::size_t q5_k_block_bytes = 176;
 inline constexpr std::size_t q6_k_block_bytes = 210;
+inline constexpr std::size_t q8_0_block_elements = 32;
+inline constexpr std::size_t q8_0_block_bytes = 34;
 
 struct StorageRowView {
     std::uint32_t type{0};

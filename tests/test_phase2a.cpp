@@ -70,6 +70,23 @@ void store_u16_le(std::span<std::byte> bytes, std::size_t offset, std::uint16_t 
     return block;
 }
 
+// Phase 2F Slice 1B: block_q8_0 layout is { ggml_half d; int8_t qs[32]; } (34 bytes,
+// authoritative source: beellama ggml/src/ggml-common.h at commit a620cbd48). d=1.0
+// (0x3C00) makes decoded[i] == qs[i] exactly (int8 -> float is exact in this range),
+// so this fixture doubles as a hand-verifiable known-answer row. Deliberately covers
+// zero, +1/-1, the int8 extremes (+127/-128), and a symmetric +/-N ramp.
+[[nodiscard]] std::array<std::byte, oracle::model::q8_0_block_bytes> q8_0_fixture() {
+    std::array<std::byte, oracle::model::q8_0_block_bytes> block{};
+    store_u16_le(block, 0, 0x3C00U);  // d = 1.0
+    constexpr std::array<std::int8_t, 32> quants{
+        0, 1, -1, 127, -128, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7,
+        -7, 8, -8, 9, -9, 10, -10, 11, -11, 12, -12, 13, -13, 14, -14, 15};
+    for (std::size_t index = 0; index < quants.size(); ++index) {
+        block[2 + index] = static_cast<std::byte>(static_cast<std::uint8_t>(quants[index]));
+    }
+    return block;
+}
+
 void test_half_conversions() {
     using oracle::model::bf16_to_f32;
     using oracle::model::f16_to_f32;
@@ -149,6 +166,60 @@ void test_q6_k_known_answer() {
     }
 }
 
+// Item 1 (geometry) + item 2 (known-answer) + item 3 (signed quant values, incl. the
+// int8 extremes) from the Phase 2F Slice 1B taskblock.
+void test_q8_0_known_answer() {
+    const auto* layout = oracle::model::ggml_type_layout(oracle::model::ggml_type_q8_0);
+    require(layout != nullptr, "Q8_0 layout must be registered");
+    require(layout->block_elements == oracle::model::q8_0_block_elements,
+            "Q8_0 block element count mismatch");
+    require(layout->bytes_per_block == oracle::model::q8_0_block_bytes,
+            "Q8_0 block byte size mismatch");
+    require(layout->quantized, "Q8_0 must be marked quantized");
+
+    const auto block = q8_0_fixture();
+    std::array<float, oracle::model::q8_0_block_elements> decoded{};
+    oracle::model::decode_storage_row(
+        oracle::model::make_storage_row_view(oracle::model::ggml_type_q8_0,
+                                             oracle::model::q8_0_block_elements,
+                                             block),
+        decoded);
+    constexpr std::array<float, 32> expected{
+        0, 1, -1, 127, -128, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7,
+        -7, 8, -8, 9, -9, 10, -10, 11, -11, 12, -12, 13, -13, 14, -14, 15};
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        require_near(decoded[index], expected[index], 0.0F,
+                     "Q8_0 known-answer mismatch at index " + std::to_string(index));
+    }
+}
+
+// Item 4: multi-block row, two blocks with distinct deltas and distinct quant patterns.
+void test_q8_0_multi_block_row() {
+    const auto first = q8_0_fixture();
+    std::array<std::byte, oracle::model::q8_0_block_bytes> second{};
+    store_u16_le(second, 0, 0x3800U);  // d = 0.5
+    for (std::size_t index = 0; index < oracle::model::q8_0_block_elements; ++index) {
+        second[2 + index] = static_cast<std::byte>(static_cast<std::uint8_t>(10));
+    }
+
+    std::array<std::byte, oracle::model::q8_0_block_bytes * 2> two_blocks{};
+    std::copy(first.begin(), first.end(), two_blocks.begin());
+    std::copy(second.begin(), second.end(),
+              two_blocks.begin() + oracle::model::q8_0_block_bytes);
+
+    std::array<float, oracle::model::q8_0_block_elements * 2> decoded{};
+    oracle::model::decode_storage_row(
+        oracle::model::make_storage_row_view(oracle::model::ggml_type_q8_0,
+                                             oracle::model::q8_0_block_elements * 2,
+                                             two_blocks),
+        decoded);
+    require_near(decoded[3], 127.0F, 0.0F, "Q8_0 multi-block first-block value mismatch");
+    require_near(decoded[oracle::model::q8_0_block_elements], 5.0F, 0.0F,
+                 "Q8_0 multi-block second-block value mismatch (10 * 0.5)");
+    require_near(decoded[oracle::model::q8_0_block_elements + 31], 5.0F, 0.0F,
+                 "Q8_0 multi-block second-block last-lane value mismatch");
+}
+
 void test_reference_dot_and_matvec() {
     const auto q5 = q5_fixture();
     std::array<float, oracle::model::qk_k> ones{};
@@ -200,6 +271,21 @@ void test_reference_dot_and_matvec() {
                  4480.0F,
                  0.0F,
                  "Q6_K reference dot mismatch");
+
+    // Item 7: Q8_0 scalar dot. sum(quants) in q8_0_fixture() == 14 (the +1/-1, +/-2..14
+    // pairs cancel; only the unpaired 0, the +127/-128 pair (-1), and the trailing +15
+    // survive: 0 + (-1) + 15 == 14), times d == 1.0.
+    const auto q8 = q8_0_fixture();
+    std::array<float, oracle::model::q8_0_block_elements> ones_q8{};
+    ones_q8.fill(1.0F);
+    require_near(oracle::backend::cpu::reference_storage_dot(
+                     oracle::model::make_storage_row_view(oracle::model::ggml_type_q8_0,
+                                                          oracle::model::q8_0_block_elements,
+                                                          q8),
+                     ones_q8),
+                 14.0F,
+                 0.0F,
+                 "Q8_0 reference dot mismatch");
 }
 
 
@@ -251,6 +337,60 @@ void test_mapped_tensor_row_adapter() {
         "mapped tensor adapter must reject inconsistent tensor byte geometry");
 }
 
+// Item 8: Q8_0 mapped-row adapter, same bounds/geometry discipline as the Q5_K adapter
+// test above -- no copies, exact row-byte offsets, out-of-range/malformed rejection.
+void test_q8_0_mapped_tensor_row_adapter() {
+    const auto first = q8_0_fixture();
+    std::array<std::byte, oracle::model::q8_0_block_bytes> second{};
+    store_u16_le(second, 0, 0x3800U);  // d = 0.5
+    for (std::size_t index = 0; index < oracle::model::q8_0_block_elements; ++index) {
+        second[2 + index] = static_cast<std::byte>(static_cast<std::uint8_t>(4));
+    }
+
+    std::array<std::byte, oracle::model::q8_0_block_bytes * 2> matrix{};
+    std::copy(first.begin(), first.end(), matrix.begin());
+    std::copy(second.begin(), second.end(), matrix.begin() + oracle::model::q8_0_block_bytes);
+
+    oracle::model::GgufTensorInfo info{"adapter.q8_0.weight",
+                                       {oracle::model::q8_0_block_elements, 2},
+                                       oracle::model::ggml_type_q8_0,
+                                       0};
+    const auto* layout = oracle::model::ggml_type_layout(oracle::model::ggml_type_q8_0);
+    require(layout != nullptr, "Q8_0 layout must exist for mapped adapter test");
+    const oracle::model::GgufTensorView tensor(&info, layout, matrix.data(), matrix.size(), 8192);
+
+    require(oracle::model::gguf_tensor_row_count(tensor) == 2,
+            "Q8_0 mapped tensor row count mismatch");
+    const auto first_row = oracle::model::make_storage_row_view(tensor, 0);
+    const auto second_row = oracle::model::make_storage_row_view(tensor, 1);
+    require(first_row.bytes.data() == tensor.bytes().data(),
+            "Q8_0 first mapped row must begin at tensor storage");
+    require(second_row.bytes.data() ==
+                tensor.bytes().data() + oracle::model::q8_0_block_bytes,
+            "Q8_0 second mapped row must advance by exact row bytes (no copy)");
+
+    std::array<float, oracle::model::q8_0_block_elements> ones{};
+    ones.fill(1.0F);
+    require_near(oracle::backend::cpu::reference_storage_dot(first_row, ones),
+                 14.0F,
+                 0.0F,
+                 "Q8_0 mapped first-row dot mismatch");
+    require_near(oracle::backend::cpu::reference_storage_dot(second_row, ones),
+                 64.0F,
+                 0.0F,
+                 "Q8_0 mapped second-row dot mismatch (32 * 4 * 0.5)");
+
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(tensor, 2)); },
+        "Q8_0 mapped tensor adapter must reject an out-of-range row");
+
+    const oracle::model::GgufTensorView malformed(&info, layout, matrix.data(),
+                                                  matrix.size() - 1, 8192);
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(malformed, 0)); },
+        "Q8_0 mapped tensor adapter must reject inconsistent tensor byte geometry");
+}
+
 void test_validation() {
     std::array<std::byte, 2> bytes{};
     require_throws(
@@ -272,6 +412,22 @@ void test_validation() {
                 short_output);
         },
         "row decode must reject output length mismatch");
+
+    // Item 5: Q8_0 truncated-row rejection (one byte short of a full 34-byte block).
+    std::array<std::byte, oracle::model::q8_0_block_bytes - 1> truncated_q8{};
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(
+                  oracle::model::ggml_type_q8_0, oracle::model::q8_0_block_elements,
+                  truncated_q8)); },
+        "Q8_0 row must reject truncated storage");
+
+    // Item 6: Q8_0 malformed row-width rejection (17 is not divisible by the 32-element
+    // block size).
+    const auto q8 = q8_0_fixture();
+    require_throws(
+        [&] { static_cast<void>(oracle::model::make_storage_row_view(
+                  oracle::model::ggml_type_q8_0, 17, q8)); },
+        "not divisible by block size");
 }
 
 }  // namespace
@@ -282,8 +438,11 @@ int main() {
         test_plain_rows();
         test_q5_k_known_answer();
         test_q6_k_known_answer();
+        test_q8_0_known_answer();
+        test_q8_0_multi_block_row();
         test_reference_dot_and_matvec();
         test_mapped_tensor_row_adapter();
+        test_q8_0_mapped_tensor_row_adapter();
         test_validation();
         std::cout << "Phase 2A storage decoding tests passed\n";
     } catch (const std::exception& error) {

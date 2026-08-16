@@ -31,6 +31,13 @@ add_library(oracle_engine
     src/runtime/qwen35_block.cpp
     src/runtime/qwen35_generation.cpp
     src/runtime/qwen35_forward.cpp
+    src/runtime/qwen35_mtp.cpp
+    src/runtime/qwen35_mtp_chain.cpp
+    src/runtime/qwen35_mtp_chain_verify.cpp
+    src/runtime/qwen35_mtp_verify.cpp
+    src/runtime/qwen35_state_fingerprint.cpp
+    src/runtime/qwen35_target_multi.cpp
+    src/runtime/qwen35_mtp_chain_verify_batched.cpp
     src/runtime/hybrid_cache.cpp
     src/runtime/reference_kernels.cpp
     src/runtime/sampler.cpp
@@ -143,4 +150,24 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase2e-tests tests/test_phase2e.cpp)
     target_link_libraries(oracle-phase2e-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase2e-tests COMMAND oracle-phase2e-tests)
+
+    add_executable(oracle-phase2f-slice1-tests tests/test_phase2f_slice1.cpp)
+    target_link_libraries(oracle-phase2f-slice1-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice1-tests COMMAND oracle-phase2f-slice1-tests)
+
+    add_executable(oracle-phase2f-slice2-tests tests/test_phase2f_slice2.cpp)
+    target_link_libraries(oracle-phase2f-slice2-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice2-tests COMMAND oracle-phase2f-slice2-tests)
+
+    add_executable(oracle-phase2f-slice3-tests tests/test_phase2f_slice3.cpp)
+    target_link_libraries(oracle-phase2f-slice3-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice3-tests COMMAND oracle-phase2f-slice3-tests)
+
+    add_executable(oracle-phase2f-slice4-tests tests/test_phase2f_slice4.cpp)
+    target_link_libraries(oracle-phase2f-slice4-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice4-tests COMMAND oracle-phase2f-slice4-tests)
+
+    add_executable(oracle-phase2f-slice5-tests tests/test_phase2f_slice5.cpp)
+    target_link_libraries(oracle-phase2f-slice5-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice5-tests COMMAND oracle-phase2f-slice5-tests)
 endif()

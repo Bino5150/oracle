@@ -18,6 +18,7 @@ namespace {
 
 inline constexpr std::uint32_t ggml_type_f32 = 0;
 inline constexpr std::uint32_t ggml_type_f16 = 1;
+inline constexpr std::uint32_t ggml_type_q8_0 = 8;
 inline constexpr std::uint32_t ggml_type_q5_k = 13;
 inline constexpr std::uint32_t ggml_type_q6_k = 14;
 inline constexpr std::uint32_t ggml_type_bf16 = 30;
@@ -49,7 +50,12 @@ enum class TensorRole {
     if (type == ggml_type_f32 || type == ggml_type_f16 || type == ggml_type_bf16) {
         return true;
     }
-    return role == TensorRole::matrix && (type == ggml_type_q5_k || type == ggml_type_q6_k);
+    // Q8_0 is a matrix-only storage encoding here (Phase 2F Slice 1B): it entered
+    // Oracle's support matrix specifically because the real Qwen3.5-2B-MTP-GGUF
+    // checkpoint stores blk.<n>.nextn.eh_proj.weight (a matrix) as Q8_0. No known
+    // Qwen3.5 vector weight requires it, so vector policy is left unchanged.
+    return role == TensorRole::matrix &&
+           (type == ggml_type_q5_k || type == ggml_type_q6_k || type == ggml_type_q8_0);
 }
 
 [[nodiscard]] std::string shape_string(std::span<const std::uint64_t> shape) {
