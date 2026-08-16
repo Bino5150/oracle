@@ -29,6 +29,7 @@ add_library(oracle_engine
     src/runtime/reference_pipeline.cpp
     src/runtime/qwen35_chat.cpp
     src/runtime/qwen35_block.cpp
+    src/runtime/qwen35_generation.cpp
     src/runtime/qwen35_forward.cpp
     src/runtime/hybrid_cache.cpp
     src/runtime/reference_kernels.cpp
@@ -80,6 +81,9 @@ target_link_libraries(oracle-qwen35-block PRIVATE oracle_engine)
 
 add_executable(oracle-qwen35-forward tools/qwen35_forward.cpp)
 target_link_libraries(oracle-qwen35-forward PRIVATE oracle_engine)
+
+add_executable(oracle-qwen35-generate tools/qwen35_generate.cpp)
+target_link_libraries(oracle-qwen35-generate PRIVATE oracle_engine)
 
 if(ORACLE_BUILD_EXAMPLES)
     add_executable(oracle-smoke examples/smoke.cpp)
@@ -135,4 +139,8 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase2d-tests tests/test_phase2d.cpp)
     target_link_libraries(oracle-phase2d-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase2d-tests COMMAND oracle-phase2d-tests)
+
+    add_executable(oracle-phase2e-tests tests/test_phase2e.cpp)
+    target_link_libraries(oracle-phase2e-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2e-tests COMMAND oracle-phase2e-tests)
 endif()
