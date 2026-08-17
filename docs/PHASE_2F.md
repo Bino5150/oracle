@@ -1,6 +1,6 @@
 # Oracle Phase 2F — Qwen3.5 MTP/NextN Contract, Binding, and Speculative Verification
 
-**Status: IN DEVELOPMENT — SLICE 5.** Phase 2F builds from landed commit
+**Status: LANDING CANDIDATE — SLICE 7 (CLOSURE).** Phase 2F builds from landed commit
 `162f0451bd4fd9710d0cc401fd4a6e4ed044c7df` (`1.1.0-phase2e`). Phase 2E's
 validated guarded Qwen3.5 autoregressive generation is treated as immutable
 baseline behavior and is unmodified by any Phase 2F slice. Phase 2F is not
@@ -12,18 +12,26 @@ reference path. Slice 3 added one-token speculative verification (depth
 fixed at 1, no chaining). Slice 4 added multi-draft MTP chaining and
 sequential partial-acceptance verification (a bounded chain of D0..D(depth-1)
 proposals, verified one at a time against freshly-forwarded target state,
-first-rejection semantics, no rollback needed or used). **Slice 5 (this
-update) adds a second, independent verification strategy**: batched
-(multi-token) target evaluation with canonical-prefix rollback. The entire
-draft chain is speculatively evaluated through the target in one pass, the
-accepted prefix is determined from that pass's own logits, and any
-non-canonical suffix is discarded via an exact `HybridCache` boundary
-truncate/restore rather than never being written in the first place. Slice
-4's sequential verifier is unmodified and remains the permanent correctness
-oracle every Slice 5 result is compared against. Still no adaptive draft
-depth, no stochastic sampling, no acceptance-rate tuning, no bonus-token
-integration into generation, and not wired into `Qwen35GenerationSession`.
-Everything above the Slice 5 section is prior slices' original record,
+first-rejection semantics, no rollback needed or used). Slice 5 added a
+second, independent verification strategy: batched (multi-token) target
+evaluation with canonical-prefix rollback via an exact `HybridCache`
+boundary truncate/restore, cross-validated bit-for-bit against Slice 4's
+unmodified sequential verifier. Slice 6 integrated this machinery into
+`Qwen35GenerationSession`, guarded and off by default. MTP never changes
+canonical generation: it only *predicts* upcoming tokens ahead of time (via
+a disposable shadow copy of canonical state), and every committed token —
+MTP on or off — still passes through the exact same real forward and real
+greedy sampler call Phase 2E's existing per-token commit path always used,
+with an internal-consistency assertion that the real sample agrees with
+MTP's prediction. **Slice 7 (this update) is Phase 2F's closure slice**: it
+closes the one literal coverage gap Slice 6 left open (a real, verified
+`[A, EOS, C]` decision batch with `A != EOS`), runs a broader real MTP
+ON/OFF canonical-parity matrix across diverse prompts and every supported
+depth, finalizes this document, and prepares the version-1.2.0-phase2f
+landing candidate. No shadow-state promotion, no bonus-token consumption,
+no adaptive depth, no stochastic speculative sampling, and no performance
+claim anywhere in Phase 2F. Everything above the Slice 7 section is
+prior slices' original record,
 updated only where a later slice
 supersedes it.
 
@@ -1552,3 +1560,632 @@ Phase 2D fingerprint re-run from scratch with identical results.
 ### Verdict
 
 `VERDICT=PHASE2F_SLICE5_BATCHED_VERIFICATION_ROLLBACK_MATCH`
+
+## Slice 6 — Guarded generation-session integration and MTP ON/OFF canonical parity
+
+### Generation integration design
+
+Read the complete landed Phase 2E implementation
+(`include/oracle/runtime/qwen35_generation.hpp`,
+`src/runtime/qwen35_generation.cpp`) before any change. `generate_fresh`'s
+per-token commit body — real forward, real greedy sample, ledger append,
+UTF-8 assembly, stop/reasoning/holdback bookkeeping, callback delivery,
+termination check — is intricate and, by design, has two separate loop
+implementations (a fast path with no stops/reasoning configured, and a slow
+path with the Slice 3B/3C bounded-holdback machinery). Rather than
+restructure either loop, Slice 6 makes exactly one narrow change, applied
+identically to both: the single line `sampler.sample(current.logits)` is
+replaced by a call to a small lambda, `obtain_next_token`, defined once and
+shared by both loops. Confirmed by inspection of the diff against
+`10fefb345f66b0fdc13e64798a56d3ef83c4d36d`: only **three lines** of existing
+code were changed (two `sampler.sample(...)` call sites, and one JSON
+closing brace to splice in the new diagnostics field) — everything else is
+pure addition. No second, speculative-specific implementation of any
+existing rule was written.
+
+`obtain_next_token`'s own body still calls `sampler.sample(current.logits)`
+— the exact same call, every single time, MTP on or off. When MTP is
+enabled and no prediction is queued, it first proposes and shadow-verifies a
+bounded draft chain (Slices 2-5, entirely unmodified) and queues the
+resulting `canonical_tokens` as *predictions*; it then asserts that the
+real, independently-derived greedy sample agrees with the head of that
+queue. Because Oracle's forward is a deterministic scalar function of state
+and MTP reference mode requires greedy sampling (enforced at preflight),
+that agreement is guaranteed whenever the shadow state genuinely mirrored
+canonical state — which it always does, since the shadow is a plain copy
+taken immediately beforehand. A mismatch is therefore treated as an internal
+consistency failure (`std::runtime_error`), never a recoverable "correction"
+path. This is the entire mechanism by which MTP is structurally incapable of
+changing canonical output: **MTP predicts; it never decides.**
+
+### MTP configuration/API
+
+`Qwen35MtpMode` (`disabled` default, `reference`) and
+`Qwen35MtpGenerationConfig{mode, max_draft_depth}` are new fields on
+`Qwen35GenerationRequest::mtp{}` — a default-constructed request is
+unchanged in every way that matters to behavior, so every existing caller
+compiles and behaves identically. Preflight (`validate_request`) rejects
+misuse clearly, before any session state is touched: `mode != disabled` on a
+manifest without `has_mtp()` throws immediately ("no MTP block") rather than
+silently no-op'ing; `max_draft_depth` outside `{1,2,3}` throws; non-zero
+`sampling.temperature` under MTP mode throws ("requires greedy sampling").
+
+### Seed / h_nextn ownership
+
+`current` (the `Qwen35ForwardResult` from whichever token was most recently
+forwarded — the last prompt token, or the last committed generated token)
+already carries everything Slice 2/4/5's contract requires as the MTP seed:
+`current.logits` (anchor target logits), `current.trace.final_norm` (the
+exact final-normalized h_nextn Slice 2 established — populated
+unconditionally by `execute_qwen35_reference_token` regardless of the
+`capture_block_outputs` flag Phase 2E already passes as `false`, so this
+costs MTP-off callers nothing new), and `current.trace.token_id` (the anchor
+token itself). No new storage was added to the session; `state_.sequence_length() - 1`
+is the seed position.
+
+### Shadow verification design
+
+`HybridCache` is copy-constructible with no special handling required (a
+plain value type over `std::vector<float>`s) — no STOP was needed for
+section 4's "if HybridCache cannot be copied/shadowed narrowly" clause.
+`obtain_next_token` takes `HybridCache shadow_state = state_;` immediately
+before generating and verifying a draft chain via Slice 5's
+`verify_qwen35_mtp_draft_chain_batched`, and lets `shadow_state` go out of
+scope the moment the accounting is read — the live `state_` is never
+touched during proposal/verification.
+
+### Canonical commit path
+
+Every canonical decision, whether it originated as an accepted draft or a
+verification-time correction, is committed by popping one token id off the
+prediction queue and letting the *existing* per-token body run exactly as
+it always has: real forward, real sample (with the queue-agreement
+assertion), ledger append, assembler append, stop/reasoning bookkeeping,
+callback, termination check. If termination fires while committing token K
+of a verified batch of size N, the loop breaks — as it always did — and the
+remaining N-K predictions are simply never popped, never asserted against,
+never emitted as events. No special "discard the rest of the batch" code
+exists because there was never a batch-shaped code path to begin with: MTP
+only ever changes how many times, in a row, the ordinary single-token loop
+body runs before a fresh chain is proposed.
+
+### Termination semantics / EOS / token-stop / text-stop parity
+
+Precedence (EOS > token stop > text stop > reasoning-loop > max_tokens, with
+context capacity checked before the next token) is verified unchanged
+against the landed source before editing (section 11) and is untouched by
+this slice — the termination checks live entirely inside the per-token body,
+which MTP never modifies or bypasses. `test_eos_inside_verified_prefix`,
+`test_token_stop_inside_verified_prefix`, and
+`test_text_stop_inside_verified_prefix` each verify, on a real forward
+(not a mock), that a >1-token MTP-verified batch correctly stops mid-batch
+and discards the verified-but-uncommitted remainder, with full MTP
+ON/OFF parity (tokens, text, stop_match, final `HybridCache` fingerprint).
+
+### UTF-8 parity
+
+Proven two ways: structurally (the assembler is invoked once per committed
+token, in commit order, regardless of MTP — there is no code path that could
+treat a whole verified batch as one fragment), and empirically, via a
+dedicated real-forward "identity" fixture (one-hot `token_embd`, `eh_proj`
+restricted to an exact identity submatrix on the e_norm/candidate-token half
+of the concat — see "MTP-identity construction" below) driven through the
+shared byte-fallback tokenizer fixture (`test_phase2e.cpp`'s
+`write_tokenizer_fixture` pattern, reused verbatim): a token whose own raw
+bytes are already a complete 2-byte UTF-8 character, repeated via a genuine
+full-accept MTP chain, and a lone multi-byte lead byte repeated (which is
+*not* valid on repetition), confirming both valid decode and U+FFFD
+replacement are unaffected by MTP.
+
+### Reasoning boundary / reasoning-loop / force-close parity
+
+All three (ordinary boundary crossing, policy `stop`, policy `force_close`)
+are exercised on a real forward via the same "MTP-identity" fixture, with
+full MTP ON/OFF parity required and confirmed. Force-close in particular is
+structurally untouched by MTP: the forced end-token sequence is injected by
+literally the same code that always injected it (`execute_qwen35_reference_token`
+called directly inside the reasoning-safety block), a code path
+`obtain_next_token` is never invoked from — so section 18's "canonical
+force-close behavior must remain a real target-model operation, never
+MTP-synthesized" holds by construction, not by a special case.
+
+### max_tokens / context-capacity parity (draft depth bounding)
+
+`effective_depth = min(requested_depth, remaining_max_tokens_budget, remaining_context_capacity)`,
+computed fresh at every draft opportunity. Both bounding quantities are
+provably `>= 1` whenever `obtain_next_token` proposes at all (the loop's own
+existing top-of-iteration `context_exhausted` check, and the previous
+iteration's own `max_tokens` check, already guarantee this), so a depth
+never gets proposed that a known hard boundary already forbids. Verified
+with `remaining_budget` at 1 and 2 against a requested depth of 3, and with
+a near-context-limit fixture (capacity 4, prompt occupying 1) — final
+generated-token count and final sequence length never exceed the
+configured limits, matching MTP OFF exactly.
+
+### Callback / event parity
+
+`compare_off_on` (the shared Lane A/B helper used by nearly every synthetic
+test) captures every delivered callback event under both MTP OFF and MTP ON
+and asserts identical count, order, token id, generated_index, text_fragment,
+token_bytes, and eos flag. Rejected/unused drafts are confirmed to produce
+*zero* events: `test_zero_accept_decision_batch` captures every event from a
+run whose MTP chain natrually proposes tokens 8/19/26 (all rejected/unused)
+and asserts every single delivered event's token id is the one real,
+committed value (0) — the rejected draft ids never appear.
+
+### MTP diagnostic accounting
+
+`Qwen35MtpDiagnostics` (`mtp_enabled`, `requested_draft_depth`,
+`draft_opportunities`, `drafts_proposed/accepted/rejected`, `unused_drafts`,
+`verification_count`, `full_accept_chains`, `partial_accept_chains`,
+`zero_accept_chains`) is attached to `Qwen35GenerationResult` and surfaced in
+the text/JSON formatters. Purely observational — accumulated from each
+opportunity's `Qwen35MtpChainAccountingBatched`, never read by the sampling
+or commit path. Invariant tested directly: `full_accept + partial_accept +
+zero_accept == draft_opportunities`, and `accepted + rejected <= proposed`
+summed across the whole run.
+
+### Synthetic test matrix
+
+`tests/test_phase2f_slice6.cpp` covers all 25 items from the taskblock's
+matrix. Three real-forward fixtures, each empirically validated (not
+hand-derived) via a disposable probe before being written into the suite —
+mirroring this project's established methodology
+(`test_phase2e.cpp`'s `discover_natural_tokens`, Slice 3's bounded rejection
+scan, Slice 4's chain rejection scan):
+
+- **all-zero** (backbone and MTP both all-zero): every real forward
+  argmaxes to token 0 regardless of input, and MTP's own `eh_proj` is zero
+  too, so both sides agree on 0 forever — a genuine, real-forward-verified
+  **full accept** at any depth, any prompt.
+- **identity** (one-hot `token_embd`, uniform `output_norm`, zero
+  `attn_output`/`ffn_down` everywhere for pure residual passthrough; MTP's
+  `eh_proj` is an exact identity submatrix on the e_norm half, zero on the
+  h_norm half — flat index verified against
+  `reference_mapped_tensor_matvec`'s actual row-major convention in
+  `quantized_reference.cpp`, `j*(2n)+j = 1`): decoding token T always
+  argmaxes to T, and MTP always predicts its own candidate token, so a
+  chained draft is `[T,T,T,...]` for *any* T — a genuine **full accept** for
+  any real token id, used to drive the UTF-8/reasoning-boundary tests with
+  real vocabulary entries.
+- **textured** (identity-shaped embedding/norm, but MTP's `eh_proj` is a
+  small fixed deterministic — not random — nonzero pattern): empirically
+  searched across all 32 seed tokens at depth 3 and found to give a genuine
+  **zero accept** for most seeds (e.g. 0) and a genuine **partial accept**
+  (accepted=1, rejected=1, unused=1) at seed 5.
+
+### Real MTP ON/OFF fixture
+
+The established capital-of-France prompt (26 tokens), run through
+`Qwen35GenerationSession` on the real 2B MTP checkpoint, 5 tokens, MTP OFF
+vs MTP ON depth 3: **both produce the identical token sequence**
+`[248068, 271, 248069, 271, 760]` (`<think>\n\n</think>\n\nThe`) — exactly
+reproducing the established real depth-3 chain (`248068, 271, 248069`) as
+genuine ordinary greedy continuation, plus two further tokens. Identical
+`finish_reason` (`max_tokens`), identical `generated_text`, identical
+`final_sequence_length` (31), and a **bit-identical** final `HybridCache`
+fingerprint (`0xbbd63c415e657f3e`) on both lanes. MTP diagnostics for the ON
+lane: 2 draft opportunities (depth 3 then depth 2, clipped by the remaining
+budget), 5/5 drafts accepted, 2 full-accept chains, 0 rejected.
+
+### Real rejection integration fixture
+
+`"The three ingredients you need are"` (the established Slice 3/5 real
+fixture) applies directly to `Qwen35GenerationSession` — `prompt_tokens` is
+a plain token-id vector with no chat-template requirement, so no session
+distortion was needed. MTP OFF and MTP ON both produce the identical
+sequence `[25, 198]`, matching the established real target value (25) at
+this position exactly, with a bit-identical final fingerprint. The MTP ON
+lane's diagnostics for this prompt show genuine, real, organic accept/
+reject/unused activity (3 proposed, 1 accepted, 1 rejected, 1 unused) at the
+first opportunity — real evidence of partial-decision-batch dynamics
+occurring naturally within a full session run on the real checkpoint, not
+just at the lower-level Slice 4/5 API.
+
+### Phase 2E regression
+
+`git diff 10fefb345f66b0fdc13e64798a56d3ef83c4d36d -- src/runtime/qwen35_generation.cpp`
+shows exactly 3 removed/changed lines (both documented above); every
+existing Phase 2E synthetic test (`oracle-phase2e-tests`) passes unchanged.
+The expensive real 4B (`Qwopus3.5`) `oracle-phase2e-slice2-fixture-v1`
+matrix was **not** re-run, per the taskblock's explicit instruction ("do not
+rerun the multi-day 4B matrix unless necessary... use the 2B MTP model for
+new real integration evidence") — MTP-disabled behavior is proven unchanged
+by the near-zero diff plus the full synthetic suite, and new real evidence
+was gathered on the 2B MTP model instead (above).
+
+### Phase 2D regression
+
+Canonical fingerprint `0x54825e50fa9398cf` re-verified bit-identical against
+the fresh Slice 6 GCC build.
+
+### Slice 4 / Slice 5 regressions
+
+Both suites (`oracle-phase2f-slice4-tests`, `oracle-phase2f-slice5-tests`)
+rerun unchanged and green on every Slice 6 build. Neither is routed through
+the other, and `verify_qwen35_mtp_draft_chain_batched` is called directly by
+Slice 6 exactly as Slice 5 exposed it — no wrapper, no behavior change.
+
+### Compiler/sanitizer gates
+
+Fresh GCC Release, fresh Clang Release (zero warnings on both), and Clang
+ASan+UBSan+leak-detection all pass 17/17 tests (`slice6-gcc-ctest.log`,
+`slice6-clang-ctest.log`, `slice6-sanitize-ctest.log`).
+
+### Clean reconstruction
+
+Fresh `git worktree add --detach` at `10fefb345f66b0fdc13e64798a56d3ef83c4d36d`
+(which already contains Slices 1-5), Slice 6's diff applied as a patch, the
+one new file (`tests/test_phase2f_slice6.cpp`) copied in, diff verified
+byte-identical to the working tree, all three build gates, the 335/335 real
+MTP binding, the Phase 2D fingerprint, and the real MTP ON/OFF generation
+fixture re-run from scratch with identical results.
+
+### Deviations / open questions
+
+- The EOS-inside-verified-prefix synthetic test lands EOS at batch index 0
+  rather than the taskblock's illustrative index 1 (i.e. "commit A, then
+  commit EOS" rather than "commit A, B=EOS, discard C"): despite substantial
+  search effort (see the empirical methodology above), no real-forward
+  fixture was found within reasonable time where two *genuinely distinct*
+  values are both accepted before a third, EOS-designated value. The
+  underlying mechanic under test — a decision batch verified >1 token deep,
+  terminating partway through and discarding the unverified-but-already-
+  decided remainder — is still exercised faithfully (the queue holds 2
+  entries; only the first is ever committed); only the specific illustrative
+  shape (non-EOS-first) differs. `test_token_stop_inside_verified_prefix`
+  and `test_text_stop_inside_verified_prefix` both *do* achieve the fuller
+  "accept, accept, then stop, discard the 3rd" shape using the all-zero
+  fixture's reliable `[0,0,0]` full-accept chain, which covers the same
+  code path this deviation would have exercised.
+- No new natural real partial-reject *search* was run at the session level
+  (per the taskblock's explicit "do not burn time searching for one");
+  Slice 6's real rejection fixture instead reused the established Slice 3/5
+  prompt/position, and happened to additionally exhibit genuine partial-
+  accept diagnostics (accepted=1, rejected=1, unused=1) as a bonus, not by
+  design.
+
+### Deliberate exclusions (per task instruction)
+
+- No shadow-state promotion into canonical session state, no zero-copy
+  speculative cache commit, no bonus-token consumption (Slice 5's bonus
+  logits remain diagnostic-only and are never read by Slice 6), no
+  stochastic speculative sampling, no adaptive draft depth, no dynamic
+  acceptance policy, no acceptance-rate optimization.
+- No CUDA/SIMD/CPU-threading/scheduler/HTTP/API/Lumina integration, no
+  Tiered Weight Residency, no performance claim anywhere in this slice.
+
+### Verdict
+
+`VERDICT=PHASE2F_SLICE6_GUARDED_GENERATION_INTEGRATION_MATCH`
+
+## Slice 7 — Final correctness closure, real MTP ON/OFF matrix, landing candidate
+
+### Slice 6 EOS closure: a real `[A, EOS, C]` decision batch, `A != EOS`
+
+Slice 6's EOS-inside-a-verified-prefix test used a fixture where EOS landed
+at batch index 0 (`[EOS, C]`), not index 1 (`[A, EOS, C]`) as the taskblock's
+illustrative example asked for. Investigating why revealed a real
+architectural fact, not a testing oversight: every fixture Slice 6 used
+(all-zero, one-hot "identity", and the sinusoidally-"textured" eh_proj) is
+*memoryless* — each one's MTP and backbone predictions are pure functions of
+the current candidate token alone. Chaining a memoryless map can only ever
+repeat a fixed point or diverge from it on the very first step; it can never
+produce a genuine two-*distinct*-value accepted prefix, because whatever
+token step *k* predicts becomes step *k+1*'s candidate, re-entering the same
+fixed function.
+
+Closing this required a fixture whose MTP prediction is *not* memoryless —
+sensitive to its full input (both the `e_norm`/candidate-token half and the
+`h_norm`/hidden-state half of the `eh_proj` concat), so that a step's
+prediction can differ from an earlier step's even when they share a
+candidate token. Rather than hand-derive such a matrix (a real transformer's
+FFN/attention nonlinearities make this intractable to solve analytically by
+inspection), this project's established empirical-search methodology was
+extended one more time: Phase 2E's own hand-engineered `ModelFixture`
+(`tests/test_phase2e.cpp`; vocab 8, embedding 4 — genuinely non-trivial
+recurrent+attention dynamics, proven and already in use for Phase 2E's own
+tests) was extended with an MTP block, and a **fixed-seed (5150), fully
+deterministic pseudo-random search** over `eh_proj` matrices was run against
+every 2-token prompt (of 64 possible) whose own natural continuation
+produces two distinct values. Exactly one prompt qualified — `[3, 6]`,
+naturally continuing `[6, 0, 0, ...]` — and the search found a match on its
+107th attempt (of a 20000-attempt budget): an `eh_proj` matrix whose real
+MTP draft chain is `[6, 0, 0]`, bit-for-bit matching that prompt's own
+natural three-step continuation. The exact matrix is committed verbatim in
+`tests/test_phase2f_slice7.cpp`.
+
+With `eos_token_id = 0`, this real chain gives exactly the required shape:
+`A = 6`, `EOS = 0`, `C = 0` (the third, never-attempted decision), `A != EOS`.
+`test_eos_at_batch_index_1` verifies, against a real (non-mocked) forward
+pass: A commits normally; EOS commits and terminates generation
+(`finish_reason == eos`); C is never committed (`generated_tokens.size() ==
+2`); C produces no canonical callback/event (exactly 2 events, `[6, 0]`);
+C leaves no canonical cache residue (final `sequence_length() == 4` —
+prompt(2) + committed(2), never 5); final canonical state is bit-identical
+to an MTP-OFF lane generating `[6, 0]`; raw/visible text, termination
+reason, and diagnostics (`unused_drafts >= 1`) all match.
+
+This last check surfaced a genuine, small gap in Slice 6's own diagnostic
+accounting, now fixed: `Qwen35MtpDiagnostics::unused_drafts` previously only
+accumulated Slice 5's own verification-time `unused_suffix` (drafts never
+individually verified because an earlier one in the same batch was
+rejected). It did not account for predictions that *were* verified and
+queued but never popped because generation ended first — exactly this
+fixture's case (the chain was a genuine full accept; C's "unused" status is
+purely a session-level commit-loop fact, invisible to Slice 5's own
+accounting). `generate_fresh` now adds `mtp_pending.size()` (whatever is
+still queued when the function returns) to `unused_drafts` before
+finalizing the result. This is the only change to `qwen35_generation.cpp`'s
+existing logic in this slice — three lines, all additive or accounting-only,
+no change to any commit/termination/sampling behavior.
+
+### Final Phase 2F architecture
+
+**A. Storage/binding** (Slice 1, 1B): real Qwen3.5-2B-MTP checkpoint
+forensics; generic Q8_0 scalar storage decode support; 335/335 real tensor
+binding, including the MTP block's `eh_proj`/`enorm`/`hnorm`/
+`shared_head_norm` and its dense full-attention block.
+
+**B. NextN numerical execution** (Slice 2): one real MTP/NextN forward
+through Oracle's decoded-F32 scalar reference path — `enorm`/`hnorm` →
+fusion → `eh_proj` → the appended block's attention+FFN → `shared_head_norm`
+→ the tied output head — validated stage-by-stage against a real captured
+`graph_mtp` execution.
+
+**C. Proposal chaining** (Slice 4): a bounded, real chain of D0..D(depth-1)
+MTP proposals, each depending causally on the previous draft's own output
+hidden state (never the target's), with the MTP block's local KV cache
+accumulating across the whole chain.
+
+**D. Sequential verification oracle** (Slice 3, 4): one-token-at-a-time
+target verification against freshly-forwarded target state, first-rejection
+semantics, no rollback needed or used. **This remains the permanent
+correctness oracle for all of Phase 2F** — never modified, never weakened,
+never routed through any later slice's implementation.
+
+**E. Batched verification / state recovery** (Slice 5): a second,
+independent verification strategy — the whole chain evaluated through the
+target in one pass, the accepted prefix determined from that pass's own
+logits, and any non-canonical suffix discarded via an exact `HybridCache`
+boundary snapshot/restore (a single, narrow boundary — not a general
+snapshot stack — sized to exactly what Gated DeltaNet recurrent state
+requires, source-proven against the pinned reference's own equivalent
+fallback). Cross-validated bit-for-bit against D on every synthetic and
+real fixture; still fully independent.
+
+**F. Guarded generation integration** (Slice 6, 7): `Qwen35GenerationSession`
+gains an off-by-default MTP mode. MTP only ever *predicts*; the real
+sampler always independently reconfirms every committed token via the
+unmodified Phase 2E per-token commit path, with an internal-consistency
+assertion if the two ever disagree (structurally, they cannot, given
+deterministic scalar execution and greedy-only MTP mode).
+
+**G. Real MTP ON/OFF parity** (Slice 6, 7): validated on the real 2B MTP
+checkpoint across the established capital-of-France and rejection fixtures
+plus a broader diverse-prompt, multi-depth matrix (below) — every lane
+canonically identical to MTP OFF.
+
+**H. What remains intentionally unoptimized**: everything. See "Phase 2F
+scope claim" below for the explicit list.
+
+### Capabilities and boundaries (explicit, per taskblock)
+
+- MTP generation currently preserves canonical target authority: the real,
+  freshly-forwarded target's own greedy sample is what gets committed,
+  always — MTP predicts, it never decides.
+- Reference mode is greedy-only (`sampling.temperature == 0`); stochastic
+  MTP configuration fails clearly at preflight rather than attempting
+  probabilistic speculative-decoding correction.
+- Max draft depth is currently 3 (`{1, 2, 3}` supported, validated at
+  preflight; no higher bound, no adaptive depth).
+- Shadow verification state is never promoted into canonical session
+  state — the shadow `HybridCache` copy is disposable, discarded the moment
+  its accounting is read.
+- Canonical tokens are always replayed through the ordinary Phase 2E
+  single-token commit path — forward, sample-with-assertion, ledger,
+  assembler, stop/reasoning bookkeeping, callback, termination check —
+  never a second, speculative-specific implementation of any of those
+  rules.
+- Bonus-token consumption is not implemented: Slice 5's bonus logits remain
+  diagnostic-only evidence and are never read by generation.
+- No speculative performance claim is made anywhere in Phase 2F. Oracle's
+  scalar reference execution is correctness-oriented by design (see Phase
+  2C/2D precedent); MTP integration deliberately recomputes real target
+  forwards rather than promoting speculative state, and this is by design,
+  not an oversight.
+- Slice 4's sequential verifier remains a permanent oracle; Slice 5's
+  batched verifier remains an independent comparator. Neither is routed
+  through the other, in either direction, anywhere in Phase 2F.
+
+### Phase 2F scope claim
+
+If every gate below is green, Phase 2F may claim: **"Validated guarded
+Qwen3.5 MTP / NextN speculative generation correctness."**
+
+Phase 2F does **not** claim: optimized speculative decoding; production
+speedup; CUDA MTP; adaptive speculation; stochastic speculation; production
+batched target execution. No wall-clock timing anywhere in this project's
+evidence is used to support a performance claim — every timing figure that
+appears in disposable harness output (e.g. "~10s/token" for Oracle's own
+scalar CPU path) is incidental logging, not benchmark evidence.
+
+### Real MTP ON/OFF matrix
+
+12 lanes across 8 diverse real prompts on the real 2B MTP checkpoint,
+covering every supported depth (1, 2, 3) and every taskblock-suggested
+category (simple factual, arithmetic, short reasoning, coding, structured
+list, completion-style, a reasoning-marker-producing prompt, and the known
+rejection fixture). **Every lane: `PARITY_OK`** — identical canonical token
+ids, identical raw/visible text, identical termination, identical final
+`HybridCache` fingerprint, MTP OFF vs MTP ON, at every depth:
+
+| prompt | depth | on tokens | finish | fingerprint | opportunities | accepted/rejected/unused | chain mix (full/partial/zero) |
+|---|---|---|---|---|---|---|---|
+| capital-of-france | 1 | `[248068,271,248069,271,760]` | max_tokens | `0xbbd63c415e657f3e` | 5 | 5/0/0 | 5/0/0 |
+| capital-of-france | 2 | (same) | max_tokens | (same) | 3 | 5/0/0 | 3/0/0 |
+| capital-of-france | 3 | (same) | max_tokens | (same) | 2 | 5/0/0 | 2/0/0 |
+| rejection-fixture | 1 | `[25,198]` | max_tokens | `0x8d12478697ead2be` | 2 | 1/1/0 | 1/0/1 |
+| rejection-fixture | 2 | (same) | max_tokens | (same) | 2 | 1/1/1 | 1/0/1 |
+| rejection-fixture | 3 | (same) | max_tokens | (same) | 2 | 1/1/1 | 1/0/1 |
+| arithmetic ("2 + 2 = ") | 3 | `[19,11,220,18]` | max_tokens | `0xb6137a5efe8d7772` | 2 | 2/2/1 | 0/2/0 |
+| short-reasoning | 2 | `[13988,13,198]` | max_tokens | `0xea813727168249a4` | 2 | 2/1/0 | 1/0/1 |
+| coding | 1 | `[264,478,292,271]` | max_tokens | `0xc008440c5df2ae3e` | 4 | 3/1/0 | 3/0/1 |
+| structured-list | 3 | `[3605,198,17,13]` | max_tokens | `0x687de1b361a4d715` | 2 | 2/2/2 | 0/1/1 |
+| simple-factual | 2 | `[10663,321,7062]` | max_tokens | `0x227a2b4870f8fdcd` | 2 | 2/1/0 | 1/1/0 |
+| completion-style | 1 | `[11,303,264,22960]` | max_tokens | `0x8665b95d8ff7411e` | 4 | 2/2/0 | 2/0/2 |
+
+Both known-answer fixtures reproduce exactly, at every depth: the
+capital-of-France chain (`[248068,271,248069,271,760]`) and its Slice 6
+fingerprint (`0xbbd63c415e657f3e`) are bit-for-bit unchanged; the rejection
+fixture's canonical beginning (`[25,198]`) is unchanged, with the target=25
+rejection now happening organically as part of a full generation-session
+run rather than a hand-constructed single-shot query. Real, natural
+partial-accept chains occurred organically on 3 of the 8 prompts
+(arithmetic: 2; structured-list: 1; simple-factual: 1) — this was not
+engineered or searched for, so no "not found" disclaimer is needed. As
+required, MTP diagnostics vary meaningfully by depth (more proposed, more
+opportunities at shallower depths) while every canonical field stays
+identical — proof that depth is purely a *prediction* knob, never a
+*decision* knob.
+
+### Landing-review amendment: literal values for the three real/synthetic known-answers
+
+The matrix table above and the EOS closure section earlier both summarize
+results; this amendment records the specific literal values a landing
+reviewer would want to see spelled out, pulled from evidence already
+generated (`slice7-closure/real-mtp-onoff-depth-matrix-run.log`,
+`slice7-closure/rejection-evidence-run.log`, and the Slice 7 test source
+itself) rather than re-running the full matrix.
+
+**Capital-of-France, depth 3.** MTP ON reproduces the generated token ids
+`[248068, 271, 248069, 271, 760]` with finish reason `max_tokens` and final
+`HybridCache` fingerprint `0xbbd63c415e657f3e` — bit-identical to MTP OFF
+at the same depth and to every other depth (1, 2, 3) in the matrix.
+
+**Rejection fixture, target 25 / draft 279.** A fresh, targeted run
+(`slice7_rejection_evidence.cpp`, not the matrix harness) reproduced the
+lower-level chain directly: prompt `"The three ingredients you need are"`
+(tokens `[760,2250,13565,488,1144,513]`), seed position 5, target argmax
+`25`, MTP draft `D0.draft_token = 279` — a confirmed natural mismatch
+(`target != draft`), zero-accept (`accepted=0 rejected=1`), lower-level
+canonical `[25]`. At the full `Qwen35GenerationSession` level (MTP ON,
+depth 1, with an event callback attached), the canonical ledger is
+`[25, 198]` and the event stream delivered is also exactly `[25, 198]` —
+token `279` appears in neither. The MTP-ON session's final `HybridCache`
+fingerprint (`0x8d12478697ead2be`) is bit-identical both to the MTP-OFF
+session's fingerprint from the same run and to the matrix table's own
+`rejection-fixture` row — an independent cross-check of the same value by
+two different harnesses. Because an MTP-disabled/pure-autoregressive run
+never proposes or touches `279` by construction, this fingerprint equality
+is the proof that no trace of `279` survives into the committed canonical
+cache.
+
+**EOS `[6,0,0]` fixture, MTP-ON == MTP-OFF `[6,0]`.** This is a synthetic
+fixture (`tests/test_phase2f_slice7.cpp`, `test_eos_at_batch_index_1`),
+not a real-checkpoint run; its literal expected values are hard-coded as
+`require()` assertions in the committed test source and were verified by
+a passing test run (`oracle-phase2f-slice7-tests`, test #18, 18/18) in
+GCC/Clang/sanitizer gates on both the working tree and the independent
+clean-worktree reconstruction. The literal assertions are: MTP-ON
+`generated_tokens == [6, 0]` with `finish_reason == eos`; MTP-OFF and
+MTP-ON `generated_tokens`, `generated_text`, and `final_sequence_length`
+are all equal; the event stream is exactly `[6, 0]` (never a 3rd event)
+with MTP-OFF/ON event token ids and `text_fragment`s equal at every index;
+`mtp_diagnostics.unused_drafts >= 1` (the discarded 3rd draft, `C`, is
+accounted for); final `HybridCache.sequence_length() == 4` on both lanes
+(prompt(2) + committed(2) — `C` never advanced it); and MTP-OFF/ON final
+`HybridCache` fingerprints are bit-identical
+(`tests/test_phase2f_slice7.cpp:402-447`).
+
+**Diff-stat reconciliation.** Two different insertion counts were cited
+for `docs/PHASE_2F.md` at different points while writing this closure
+(`814` when the reconstruction worktree was built and verified, `845`
+after the reconstruction-results paragraph was appended) purely because
+`docs/PHASE_2F.md` is itself one of the diffed files, so each further
+closure paragraph — including this reconciliation note — mechanically
+grows its own insertion count by construction; the four tracked source/
+build files (`CMakeLists.txt`, `include/oracle/runtime/qwen35_generation.hpp`,
+`include/oracle/version.hpp`, `src/runtime/qwen35_generation.cpp`) and
+the two new test files never moved from their originally-diffed content
+and were confirmed byte-identical in the reconstruction worktree. This
+is not evidence of drift in the actual engineering change, only of the
+documentation describing its own diff while still being written. For
+that reason no specific insertion count for `docs/PHASE_2F.md` is quoted
+as final here; `git diff --stat 10fefb345f66b0fdc13e64798a56d3ef83c4d36d`
+against the frozen pre-commit tree is the authoritative source once no
+further doc edits are pending, and is what the landing diff review in
+the final report should quote.
+
+### Compiler/sanitizer gates (Slice 7)
+
+Fresh GCC Release, fresh Clang Release (zero warnings on both), and Clang
+ASan+UBSan+leak-detection all pass 18/18 tests (`slice7-gcc-ctest.log`,
+`slice7-clang-ctest.log`, `slice7-sanitize-ctest.log`).
+
+### Phase 2D / Phase 2E regression (Slice 7)
+
+Canonical Phase 2D fingerprint `0x54825e50fa9398cf` re-verified
+bit-identical against the fresh Slice 7 GCC build. `oracle-phase2e-tests`
+(the complete existing Phase 2E synthetic suite) passes unchanged; the
+expensive real 4B `oracle-phase2e-slice2-fixture-v1` matrix was not
+re-run (no source change requires it — `qwen35_generation.cpp`'s only
+change this slice is the three-line, purely-additive diagnostics fix
+described above).
+
+### Test registration
+
+`oracle-phase2f-slice7-tests` is registered in ordinary CTest
+(`CMakeLists.txt`), exactly like every other Phase 2F suite. The real
+2B-checkpoint matrix (`slice7_real_matrix.cpp`) remains an explicit,
+disposable, manually-invoked harness — CI cannot reasonably bundle a
+1.4 GiB checkpoint — but its invocation and complete known-answer evidence
+are committed verbatim under `model-reports/.../slice7-closure/`.
+
+### Version landing candidate
+
+`1.1.0-phase2e` → `1.2.0-phase2f`, applied only after every gate above
+passed, via the project's single existing version mechanism
+(`include/oracle/version.hpp`'s `inline constexpr std::string_view version`,
+the only place a version string is defined in the codebase; consumed solely
+by `src/runtime/engine.cpp`'s CLI banner — no second version source exists
+or was introduced). CMakeLists.txt's own `project(oracle_inference_engine
+VERSION 1.0.0 ...)` declaration is the unrelated CMake build-system version
+and was intentionally left untouched, consistent with every prior Phase 2F
+slice. Post-bump, fresh GCC Release, fresh Clang Release (zero warnings),
+and Clang ASan+UBSan+leak-detection builds were re-run and all pass 18/18
+tests; the bump was then re-verified bit-identical in the Slice 6+7 clean
+detached-worktree reconstruction below.
+
+### Clean reconstruction (Slice 6+7 landing candidate)
+
+Fresh `git worktree add --detach` at `10fefb345f66b0fdc13e64798a56d3ef83c4d36d`
+(which already contains Slices 1-5; Slices 6 and 7 were never separately
+committed, so this single reconstruction covers both). The combined Slice
+6+7 diff (`CMakeLists.txt`, `docs/PHASE_2F.md`,
+`include/oracle/runtime/qwen35_generation.hpp`, `include/oracle/version.hpp`,
+`src/runtime/qwen35_generation.cpp` — 5 files, 814 insertions/17 deletions)
+was applied as a patch, the two untracked test files
+(`tests/test_phase2f_slice6.cpp`, `tests/test_phase2f_slice7.cpp`) copied
+in, and every one of those seven files verified byte-identical to the
+working tree. From that clean worktree: fresh GCC Release, fresh Clang
+Release (zero warnings on both), and Clang ASan+UBSan+leak-detection all
+pass 18/18 tests; the real 335/335 MTP tensor binding re-verified against
+the live checkpoint; and the full 12-lane real MTP ON/OFF depth matrix
+(same 8 prompts, same depths) was recompiled against the reconstruction
+build and rerun end-to-end, producing output byte-identical to the
+original evidence capture (`real-mtp-onoff-depth-matrix-run.log`) —
+every finish reason, token sequence, generated text, sequence length,
+and `HybridCache` fingerprint matched exactly, and `ALL_PARITY_OK YES`
+held across all 12 lanes. No commit was made in the reconstruction
+worktree; it was removed after verification.
+
+### Deviations / open questions
+
+None beyond what Slices 1-6 already recorded. The EOS-index-1 closure item
+(section above) is the only substantive new engineering in this slice
+beyond evidence-gathering, documentation, and the version bump.
+
+### Verdict
+
+`VERDICT=PHASE2F_LANDING_CANDIDATE_MATCH`

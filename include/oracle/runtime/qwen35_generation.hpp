@@ -205,6 +205,42 @@ struct Qwen35StopMatch {
     std::string matched_text;
 };
 
+// Phase 2F Slice 6: guarded MTP integration. `disabled` (the default)
+// preserves every Phase 2E code path and semantic exactly -- see
+// docs/PHASE_2F.md ("Slice 6") for the full parity contract. `reference`
+// enables the already-validated Phase 2F draft/verify machinery (Slices
+// 2-5) to *predict* upcoming canonical tokens ahead of time; it never
+// changes which tokens are committed or how -- every committed token still
+// passes through the exact same single-token Phase 2E commit path
+// (ordinary forward, ordinary greedy sample, ordinary ledger/UTF-8/stop/
+// reasoning handling), with an internal-consistency check that the
+// real, freshly-sampled token agrees with MTP's prediction. This is
+// deliberately not an optimization in this slice: no state is promoted,
+// no forward is skipped, and no speedup is claimed.
+enum class Qwen35MtpMode {
+    disabled,
+    reference,
+};
+
+[[nodiscard]] std::string_view qwen35_mtp_mode_name(Qwen35MtpMode mode) noexcept;
+
+// Phase 2F Slice 6. mode defaults to disabled, so a default-constructed
+// Qwen35GenerationRequest is byte-for-byte the pre-Slice-6 request shape in
+// every way that matters to behavior. When mode != disabled:
+//   - the bound manifest must have an MTP block (manifest_.has_mtp()),
+//     else session setup fails clearly rather than silently no-op'ing;
+//   - max_draft_depth must be 1, 2, or 3 (no adaptive depth, no higher
+//     bound in this slice);
+//   - sampling.temperature must be exactly 0 (greedy-only reference mode;
+//     stochastic MTP configuration is explicitly out of scope and fails
+//     clearly rather than attempting probabilistic speculative-decoding
+//     correction).
+// See Qwen35GenerationSession::validate_request.
+struct Qwen35MtpGenerationConfig {
+    Qwen35MtpMode mode{Qwen35MtpMode::disabled};
+    std::uint32_t max_draft_depth{1};
+};
+
 struct Qwen35GenerationRequest {
     std::vector<std::uint32_t> prompt_tokens;
     std::size_t max_generated_tokens{1};
@@ -226,7 +262,47 @@ struct Qwen35GenerationRequest {
     // that case, since there is nothing to bound "hidden reasoning" by.
     std::optional<Qwen35ReasoningBoundary> reasoning_boundary;
     Qwen35ReasoningLoopConfig reasoning_loop{};
+
+    // Phase 2F Slice 6. Disabled by default.
+    Qwen35MtpGenerationConfig mtp{};
 };
+
+// Phase 2F Slice 6: per-generation-run correctness/behavior diagnostics --
+// never performance metrics, and never consulted by canonical sampling.
+// All zero when mtp.mode == disabled. draft_opportunities counts only
+// chains actually proposed (an opportunity where the effective depth
+// bound -- see docs/PHASE_2F.md -- clips to zero, which cannot currently
+// happen once generation has not already terminated, would not count).
+// full_accept_chains + partial_accept_chains + zero_accept_chains ==
+// draft_opportunities always; drafts_accepted + drafts_rejected <=
+// drafts_proposed, mirroring Slice 4/5's own accounting invariants summed
+// across every opportunity in this run.
+//
+// unused_drafts (Phase 2F Slice 7 correction) counts every genuinely
+// decided-but-never-committed prediction, from two distinct sources: (a)
+// Slice 5's own verification-time unused_suffix -- drafts never
+// individually verified because an earlier one in the same batch was
+// rejected -- and (b) predictions that WERE verified/accepted and queued,
+// but were never popped because generation ended first (EOS, a configured
+// stop, max_tokens, or context_exhausted firing while an earlier queued
+// entry was being committed). Both are real, uncommitted decisions from
+// the caller's point of view; this field does not distinguish which of the
+// two produced any given count.
+struct Qwen35MtpDiagnostics {
+    bool mtp_enabled{false};
+    std::uint32_t requested_draft_depth{0};
+    std::size_t draft_opportunities{0};
+    std::size_t drafts_proposed{0};
+    std::size_t drafts_accepted{0};
+    std::size_t drafts_rejected{0};
+    std::size_t unused_drafts{0};
+    std::size_t verification_count{0};
+    std::size_t full_accept_chains{0};
+    std::size_t partial_accept_chains{0};
+    std::size_t zero_accept_chains{0};
+};
+
+[[nodiscard]] std::string qwen35_mtp_diagnostics_json(const Qwen35MtpDiagnostics& diagnostics);
 
 struct Qwen35GeneratedToken {
     std::uint32_t token_id{0};
@@ -335,6 +411,9 @@ struct Qwen35GenerationResult {
     // template has no configured reasoning_boundary, or no loop was ever
     // detected.
     std::vector<Qwen35ReasoningIntervention> reasoning_interventions;
+
+    // Phase 2F Slice 6. See Qwen35MtpDiagnostics.
+    Qwen35MtpDiagnostics mtp_diagnostics{};
 };
 
 [[nodiscard]] Qwen35GenerationRequest make_qwen35_chat_generation_request(

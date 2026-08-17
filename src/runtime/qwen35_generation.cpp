@@ -1,6 +1,10 @@
 #include "oracle/runtime/qwen35_generation.hpp"
 
+#include "oracle/runtime/qwen35_mtp_chain.hpp"
+#include "oracle/runtime/qwen35_mtp_chain_verify_batched.hpp"
+
 #include <array>
+#include <deque>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -535,6 +539,30 @@ std::string_view qwen35_reasoning_loop_policy_name(Qwen35ReasoningLoopPolicy pol
     return "unknown";
 }
 
+std::string_view qwen35_mtp_mode_name(Qwen35MtpMode mode) noexcept {
+    switch (mode) {
+        case Qwen35MtpMode::disabled: return "disabled";
+        case Qwen35MtpMode::reference: return "reference";
+    }
+    return "unknown";
+}
+
+std::string qwen35_mtp_diagnostics_json(const Qwen35MtpDiagnostics& diagnostics) {
+    std::ostringstream output;
+    output << '{' << "\"mtp_enabled\":" << (diagnostics.mtp_enabled ? "true" : "false") << ','
+           << "\"requested_draft_depth\":" << diagnostics.requested_draft_depth << ','
+           << "\"draft_opportunities\":" << diagnostics.draft_opportunities << ','
+           << "\"drafts_proposed\":" << diagnostics.drafts_proposed << ','
+           << "\"drafts_accepted\":" << diagnostics.drafts_accepted << ','
+           << "\"drafts_rejected\":" << diagnostics.drafts_rejected << ','
+           << "\"unused_drafts\":" << diagnostics.unused_drafts << ','
+           << "\"verification_count\":" << diagnostics.verification_count << ','
+           << "\"full_accept_chains\":" << diagnostics.full_accept_chains << ','
+           << "\"partial_accept_chains\":" << diagnostics.partial_accept_chains << ','
+           << "\"zero_accept_chains\":" << diagnostics.zero_accept_chains << '}';
+    return output.str();
+}
+
 Qwen35GenerationRequest make_qwen35_chat_generation_request(
     const tokenizer::Qwen35Tokenizer& tokenizer,
     const Qwen35ChatRequest& chat,
@@ -665,6 +693,26 @@ void Qwen35GenerationSession::validate_request(const Qwen35GenerationRequest& re
     // Constructing the sampler is part of preflight so invalid sampling
     // configuration cannot reset or partially mutate an existing session.
     static_cast<void>(Sampler(request.sampling));
+
+    // Phase 2F Slice 6: MTP misuse fails clearly at preflight, exactly like
+    // every other configuration error above, rather than silently
+    // pretending MTP is active or activating it against an incompatible
+    // model.
+    if (request.mtp.mode != Qwen35MtpMode::disabled) {
+        if (!manifest_.has_mtp()) {
+            throw std::invalid_argument(
+                "Qwen3.5 generation requested MTP mode but the bound manifest has no MTP block");
+        }
+        if (request.mtp.max_draft_depth < 1 || request.mtp.max_draft_depth > 3) {
+            throw std::invalid_argument(
+                "Qwen3.5 generation MTP max_draft_depth must be 1, 2, or 3");
+        }
+        if (request.sampling.temperature != 0.0F) {
+            throw std::invalid_argument(
+                "Qwen3.5 generation MTP reference mode requires greedy sampling "
+                "(sampling.temperature == 0)");
+        }
+    }
 }
 
 Qwen35GenerationResult Qwen35GenerationSession::generate_fresh(
@@ -707,6 +755,107 @@ Qwen35GenerationResult Qwen35GenerationSession::generate_fresh(
         // tokens, starting from a clean pending-byte buffer.
         Qwen35IncrementalTextAssembler assembler(tokenizer_);
 
+        // Phase 2F Slice 6: the ONE place MTP touches the generation loop.
+        // `current` (captured by reference below) always holds, at the
+        // point this is called, the forward result of whatever token was
+        // most recently committed (or the last prompt token, on the very
+        // first call) -- exactly the anchor Slice 2/4/5's MTP contract
+        // requires: current.logits is the anchor's own next-token
+        // distribution, current.trace.final_norm is its h_nextn, and
+        // current.trace.token_id is the anchor token itself.
+        //
+        // When MTP is enabled and no prediction is already queued, this
+        // proposes and shadow-verifies a bounded draft chain (Slices 2-5,
+        // completely unmodified) and queues its canonical_tokens as
+        // *predictions* -- never as tokens to commit directly. Every call
+        // still ends with a real `sampler.sample(current.logits)`, the
+        // exact same call Slice 3A/3B/3C's loops already make when MTP is
+        // disabled; the only addition is asserting that this real,
+        // independently-derived greedy sample agrees with the head of the
+        // prediction queue. Because MTP reference mode requires greedy
+        // sampling (validate_request) and Oracle's forward is a
+        // deterministic scalar function of state, that agreement is
+        // guaranteed by construction whenever the shadow state genuinely
+        // mirrored canonical state -- a mismatch is therefore treated as an
+        // internal-consistency failure, not a recoverable case. This is why
+        // MTP cannot change canonical output: the committed token is always
+        // the one the ordinary sampler independently produces from a real,
+        // freshly (re)computed forward on the real canonical HybridCache
+        // (see docs/PHASE_2F.md, "Slice 6", "target state commit model").
+        std::deque<std::uint32_t> mtp_pending;
+        Qwen35MtpDiagnostics mtp_diag;
+        mtp_diag.mtp_enabled = request.mtp.mode != Qwen35MtpMode::disabled;
+        mtp_diag.requested_draft_depth = request.mtp.max_draft_depth;
+
+        auto obtain_next_token = [&]() -> SampleResult {
+            if (request.mtp.mode != Qwen35MtpMode::disabled && mtp_pending.empty()) {
+                // Draft depth bounding (taskblock section 8): never propose
+                // speculative tokens that a known hard boundary already
+                // forbids. Both quantities are guaranteed >= 1 here -- the
+                // loop's own top-of-iteration context_exhausted check, and
+                // the previous iteration's own max_tokens check, already
+                // guard against either being zero by the time a new token
+                // is about to be sampled.
+                const std::size_t remaining_budget =
+                    request.max_generated_tokens - result.generated_tokens.size();
+                const std::size_t remaining_capacity =
+                    maximum_context_tokens() - state_.sequence_length();
+                std::size_t effective_depth = request.mtp.max_draft_depth;
+                effective_depth = std::min(effective_depth, remaining_budget);
+                effective_depth = std::min(effective_depth, remaining_capacity);
+
+                if (effective_depth > 0) {
+                    const Qwen35MtpDraftChain chain = generate_qwen35_mtp_draft_chain(
+                        manifest_, weights_, current.trace.token_id, current.trace.final_norm,
+                        state_.sequence_length() - 1,
+                        static_cast<std::uint32_t>(effective_depth), false);
+
+                    // Shadow verification: a disposable copy of canonical
+                    // state, discarded the moment this block ends. The live
+                    // session cache (state_) is never touched here -- see
+                    // taskblock section 9.
+                    HybridCache shadow_state = state_;
+                    const Qwen35MtpChainAccountingBatched accounting =
+                        verify_qwen35_mtp_draft_chain_batched(
+                            manifest_, weights_, chain, current.logits, shadow_state,
+                            static_cast<std::uint32_t>(effective_depth));
+
+                    ++mtp_diag.draft_opportunities;
+                    mtp_diag.drafts_proposed += accounting.proposed;
+                    mtp_diag.drafts_accepted += accounting.accepted;
+                    mtp_diag.drafts_rejected += accounting.rejected;
+                    mtp_diag.unused_drafts += accounting.unused_suffix;
+                    mtp_diag.verification_count += accounting.verification_count;
+                    if (accounting.full_chain_accepted) {
+                        ++mtp_diag.full_accept_chains;
+                    } else if (accounting.accepted == 0) {
+                        ++mtp_diag.zero_accept_chains;
+                    } else {
+                        ++mtp_diag.partial_accept_chains;
+                    }
+
+                    for (const std::uint32_t token_id : accounting.canonical_tokens) {
+                        mtp_pending.push_back(token_id);
+                    }
+                }
+            }
+
+            // The one, unmodified sampling call every committed token in
+            // this function has always gone through. No skipping, no
+            // MTP-specific substitute value.
+            const SampleResult sampled = sampler.sample(current.logits);
+            if (!mtp_pending.empty()) {
+                const std::uint32_t predicted = mtp_pending.front();
+                mtp_pending.pop_front();
+                if (sampled.token_id != predicted) {
+                    throw std::runtime_error(
+                        "Qwen3.5 MTP shadow-verified prediction disagreed with the real "
+                        "canonical greedy sample -- internal consistency failure");
+                }
+            }
+            return sampled;
+        };
+
         if (!stops_configured && !reasoning_enabled) {
             // No stops configured and reasoning safety inert: identical timing/ordering to Slice 3A
             // (synchronous per-token delivery), with Slice 3B's EOS
@@ -719,7 +868,7 @@ Qwen35GenerationResult Qwen35GenerationSession::generate_fresh(
                     break;
                 }
 
-                const SampleResult sampled = sampler.sample(current.logits);
+                const SampleResult sampled = obtain_next_token();
                 if (sampled.token_id >= manifest_.vocabulary_size) {
                     throw std::runtime_error(
                         "Qwen3.5 generation sampler returned an invalid token id");
@@ -828,7 +977,7 @@ Qwen35GenerationResult Qwen35GenerationSession::generate_fresh(
                     break;
                 }
 
-                const SampleResult sampled = sampler.sample(current.logits);
+                const SampleResult sampled = obtain_next_token();
                 if (sampled.token_id >= manifest_.vocabulary_size) {
                     throw std::runtime_error(
                         "Qwen3.5 generation sampler returned an invalid token id");
@@ -1213,6 +1362,16 @@ Qwen35GenerationResult Qwen35GenerationSession::generate_fresh(
             throw std::runtime_error(
                 "Qwen3.5 generation accepted-token ledger does not match hybrid state");
         }
+        // Phase 2F Slice 7: any predictions still queued when generation
+        // ends (e.g. EOS/a stop/max_tokens/context_exhausted fired while
+        // committing an earlier entry of a verified batch) were genuinely
+        // decided by MTP but never committed -- account for them here,
+        // distinct from Slice 5's own verification-time unused_suffix
+        // (drafts never individually verified because an earlier one in
+        // the same batch was rejected). Both are real, uncommitted
+        // "unused" predictions from the caller's point of view.
+        mtp_diag.unused_drafts += mtp_pending.size();
+        result.mtp_diagnostics = mtp_diag;
         return result;
     } catch (...) {
         state_.reset();
@@ -1240,6 +1399,18 @@ std::string qwen35_generation_result_text(const Qwen35GenerationResult& result) 
                << match.generated_token_end << ')'
                << " text_byte_offset=" << match.text_byte_offset
                << " matched_text=" << match.matched_text << '\n';
+    }
+    if (result.mtp_diagnostics.mtp_enabled) {
+        const Qwen35MtpDiagnostics& diag = result.mtp_diagnostics;
+        output << "mtp: requested_draft_depth=" << diag.requested_draft_depth
+               << " draft_opportunities=" << diag.draft_opportunities
+               << " drafts_proposed=" << diag.drafts_proposed
+               << " drafts_accepted=" << diag.drafts_accepted
+               << " drafts_rejected=" << diag.drafts_rejected
+               << " unused_drafts=" << diag.unused_drafts
+               << " full_accept_chains=" << diag.full_accept_chains
+               << " partial_accept_chains=" << diag.partial_accept_chains
+               << " zero_accept_chains=" << diag.zero_accept_chains << '\n';
     }
     return output.str();
 }
@@ -1281,7 +1452,8 @@ std::string qwen35_generation_result_json(const Qwen35GenerationResult& result) 
         if (index != 0) output << ',';
         output << qwen35_reasoning_intervention_json(result.reasoning_interventions[index]);
     }
-    output << "]}";
+    output << "]," << "\"mtp_diagnostics\":" << qwen35_mtp_diagnostics_json(result.mtp_diagnostics)
+           << '}';
     return output.str();
 }
 

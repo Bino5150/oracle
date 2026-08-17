@@ -170,4 +170,12 @@ if(ORACLE_BUILD_TESTS)
     add_executable(oracle-phase2f-slice5-tests tests/test_phase2f_slice5.cpp)
     target_link_libraries(oracle-phase2f-slice5-tests PRIVATE oracle_engine)
     add_test(NAME oracle-phase2f-slice5-tests COMMAND oracle-phase2f-slice5-tests)
+
+    add_executable(oracle-phase2f-slice6-tests tests/test_phase2f_slice6.cpp)
+    target_link_libraries(oracle-phase2f-slice6-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice6-tests COMMAND oracle-phase2f-slice6-tests)
+
+    add_executable(oracle-phase2f-slice7-tests tests/test_phase2f_slice7.cpp)
+    target_link_libraries(oracle-phase2f-slice7-tests PRIVATE oracle_engine)
+    add_test(NAME oracle-phase2f-slice7-tests COMMAND oracle-phase2f-slice7-tests)
 endif()
